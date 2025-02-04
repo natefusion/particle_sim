@@ -23,7 +23,7 @@ Velocity_Field :: struct {
     position : [2]f32,
     width : f32,
     height : f32,
-    field : [6][6][2]f32,
+    field : [12][12][2]f32,
     barrier : bool,
 }
 
@@ -64,8 +64,8 @@ F_g :: proc(mass: f32) -> [2]f32 {
 main :: proc() {
     rl.InitWindow(1000, 1000, "particle sim");
 
-    FPS :: 144;
-    rl.SetTargetFPS(144);
+    rl.SetTargetFPS(rl.GetMonitorRefreshRate(rl.GetCurrentMonitor()));
+    FPS := cast(f32)rl.GetMonitorRefreshRate(rl.GetCurrentMonitor());
 
     p : Particle = {
         acceleration = {0, 0},
@@ -129,12 +129,15 @@ main :: proc() {
         }
 
 
+        accel_to_add : [2]f32;
         for &field, field_idx in fields {
             if alt_key_down && selected_field < 0 && rl.CheckCollisionPointRec(mousePos, rl.Rectangle {field.position.x, field.position.y, field.width, field.height}) {
                 selected_field = field_idx;
                 held_mouse_pos = mousePos - fields[selected_field].position;
             }
-            
+
+            avg : [2]f32= 0
+            num := 0
             for &row, i in field.field {
                 rowlen := cast(f32)len(field.field);
 
@@ -147,23 +150,28 @@ main :: proc() {
                     }
 
                     diff := linalg.abs(p.position - start);
-                    if diff.x < field.width/collen/2 && diff.y < field.height/rowlen/2 {
+                    if diff.x < field.width/collen && diff.y < field.height/rowlen {
                         if !field.barrier {
-                            p.velocity = col;
+                            avg += col;
+                            num += 1;
                             p.acceleration = 0;
                         } else {
-                            p.acceleration -= linalg.normalize(p.velocity);
+                            avg += linalg.normalize(p.velocity);
+                            num += 1;
                         }
                     }
                 }
             }
+
+            if !field.barrier && num > 0 do p.velocity = avg / cast(f32)num;
+            if field.barrier && num > 0 do accel_to_add = -10000 * linalg.normalize(p.velocity) * avg / cast(f32)num;
         }
 
         F_d : [2]f32 = F_d(dynamic_viscosity_air, p.radius, p.velocity);
-        // F_g : [2]f32 = F_g(p.mass);
+        F_g : [2]f32 = F_g(p.mass);
         
-        // F_net : [2]f32 =  F_d + F_g;
-        // p.acceleration = F_net / p.mass;
+        F_net : [2]f32 =  F_d + F_g;
+        p.acceleration = F_net / p.mass + accel_to_add;
         p.velocity += p.acceleration * 1./FPS;
         p.position += p.velocity * 1./FPS;
         
@@ -179,9 +187,7 @@ main :: proc() {
         rl.DrawRectangleLinesEx(bounds, line_width, rl.RED);
 
         ybounds := (p.position.y >= (bounds.height + bounds.y - p.radius - line_width)) || p.position.y <= p.radius + line_width;
-        // ybounds := p.position.y + p.radius > bounds.height + bounds.y - line_width;
         xbounds := (p.position.x >= (bounds.width + bounds.x - p.radius - line_width)) || p.position.x <= p.radius + line_width;
-        // xbounds := p.position.x + p.radius > bounds.width + bounds.x - line_width;
         if ybounds || xbounds {
             p.velocity *= -1 * damping_factor;
             if ybounds do p.position.y = bounds.height + bounds.y - p.radius - line_width;
