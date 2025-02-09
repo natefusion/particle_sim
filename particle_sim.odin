@@ -8,7 +8,7 @@ dynamic_viscosity_mystery :: 1;
 dynamic_viscosity_air ::    0.00001822;
 density_water :: 1000; // 22 deg C
 density_iron :: 7874; // kg/m^3
-density_mystery :: 7;
+density_mystery :: 7874;
 pixels_per_meter : f32 : 30;
 gravity : f32 : 9.81 * pixels_per_meter;
 
@@ -70,19 +70,23 @@ main :: proc() {
     rl.SetTargetFPS(rl.GetMonitorRefreshRate(rl.GetCurrentMonitor()));
     FPS := cast(f32)rl.GetMonitorRefreshRate(rl.GetCurrentMonitor());
 
-    p : Particle = {
+    particle_template : Particle = {
         acceleration = {0, 0},
-        position = {500, 500},
+        position = {500, 490},
         density  = density_mystery / math.pow(pixels_per_meter, 3),
-        radius = 1 * pixels_per_meter,
-    };
+        radius = .2 * pixels_per_meter,
+    }
+    particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density;
 
-    p.mass = sphere_volume(p.radius) * p.density;
+    ps : [dynamic]Particle;
+    append(&ps, particle_template)
+
+
 
 
     density_fluid : f32 = density_water / math.pow(pixels_per_meter, 3);
 
-    bounds := rl.Rectangle {10, 10, 980, 980};
+    bounds := rl.Rectangle {10, 400, 980, 100};
     line_width :: 2;
     damping_factor : f32 = 0.2;
 
@@ -105,10 +109,10 @@ main :: proc() {
         ctrl_key_down := rl.IsKeyDown(rl.KeyboardKey.LEFT_CONTROL);
         mousePos := rl.GetMousePosition();
 
-        if rl.IsKeyPressed(rl.KeyboardKey.H) {
-            p.acceleration = 0;
-            p.velocity = 0;
-        }
+        // if rl.IsKeyPressed(rl.KeyboardKey.H) {
+        //     p.acceleration = 0;
+        //     p.velocity = 0;
+        // }
 
         if alt_key_down && rl.IsKeyPressed(rl.KeyboardKey.D) {
 
@@ -117,9 +121,9 @@ main :: proc() {
 
         if !alt_key_down do selected_field = -1;
 
-        if rl.IsMouseButtonPressed(rl.MouseButton.LEFT) {
-            p.position = mousePos;
-        }
+        // if rl.IsMouseButtonPressed(rl.MouseButton.LEFT) {
+        //     p.position = mousePos;
+        // }
 
         if rl.IsKeyPressed(rl.KeyboardKey.A) {
             field_template.position.x = mousePos.x - field_template.width/2 + 10;
@@ -127,76 +131,103 @@ main :: proc() {
             append(&fields, field_template);
         }
 
+        if rl.IsKeyPressed(rl.KeyboardKey.N) {
+            particle_template.position = mousePos
+            append(&ps, particle_template)
+        }
+
         if !ctrl_key_down && selected_field >= 0 {
             fields[selected_field].position = mousePos - held_mouse_pos;
         }
 
+        mouse_particle_idx := -1
 
-        accel_to_add : [2]f32;
-        avg : [2]f32= 0
-        num := 0
-        for &field, field_idx in fields {
-            if alt_key_down && selected_field < 0 && rl.CheckCollisionPointRec(mousePos, rl.Rectangle {field.position.x, field.position.y, field.width, field.height}) {
-                selected_field = field_idx;
-                held_mouse_pos = mousePos - fields[selected_field].position;
+
+        for &p, p_idx in ps {
+            if rl.CheckCollisionPointCircle(mousePos, p.position, p.radius) {
+                mouse_particle_idx = p_idx
             }
+            avg : [2]f32= 0
+            num := 0
 
-            for &row, i in field.field {
-                rowlen := cast(f32)len(field.field);
-
-                for &col, j in row {
-                    collen := cast(f32)len(row);
-                    start : [2]f32 = {field.position.x + cast(f32)j*field.width/collen, field.position.y + cast(f32)i*field.height/rowlen};
-                    if ctrl_key_down && field_idx == selected_field {
-                        arrow := start - mousePos;
-                        col = -10000 * linalg.vector_normalize(arrow);
-                    }
-
-                    diff := linalg.abs(p.position - start);
-                    if diff.x < field.width/collen && diff.y < field.height/rowlen {
-                        avg += col;
-                        num += 1;
+            F_particle : [2]f32 = 0            
+            for &p1, p1_idx in ps {
+                if p1_idx != p_idx {
+                    if rl.CheckCollisionCircles(p1.position, p1.radius, p.position, p.radius) {
+                        F_particle += -p.velocity * FPS * p.mass * .5 - p1.acceleration * p1.mass
                     }
                 }
             }
+
+            for &field, field_idx in fields {
+                if alt_key_down && selected_field < 0 && rl.CheckCollisionPointRec(mousePos, rl.Rectangle {field.position.x, field.position.y, field.width, field.height}) {
+                    selected_field = field_idx;
+                    held_mouse_pos = mousePos - fields[selected_field].position;
+                }
+
+                for &row, i in field.field {
+                    rowlen := cast(f32)len(field.field);
+
+                    for &col, j in row {
+                        collen := cast(f32)len(row);
+                        start : [2]f32 = {field.position.x + cast(f32)j*field.width/collen, field.position.y + cast(f32)i*field.height/rowlen};
+                        if ctrl_key_down && field_idx == selected_field {
+                            arrow := start - mousePos;
+                            col = -5000 * linalg.vector_normalize(arrow);
+                        }
+
+                        diff := linalg.abs(p.position - start);
+                        if diff.x < field.width/collen && diff.y < field.height/rowlen {
+                            avg += col;
+                            num += 1;
+                        }
+                    }
+                }
+            }
+
+            ybounds1 := (p.position.y > (bounds.height + bounds.y - p.radius - line_width));
+            ybounds2 :=  p.position.y < p.radius + line_width + bounds.y;
+            xbounds1 := (p.position.x > (bounds.width + bounds.x - p.radius - line_width));
+            xbounds2 := p.position.x < line_width + p.radius + bounds.x;
+
+            F_d : [2]f32 = F_d(dynamic_viscosity_mystery, p.radius, p.velocity) if num > 0 else F_d(dynamic_viscosity_air, p.radius, p.velocity);
+            F_g : [2]f32 = 0//F_g(p.mass);
+
+            F_wall :[2]f32 = 0
+            if ybounds1 || xbounds1 || ybounds2 || xbounds2 {
+                F_wall = -p.velocity * FPS * p.mass * 1.5 - (F_d + F_g);
+                if ybounds1 do p.position.y = bounds.height + bounds.y - p.radius - line_width
+                if xbounds1 do p.position.x = bounds.width + bounds.x - p.radius - line_width
+                if ybounds2 do p.position.y = bounds.y + line_width + p.radius
+                if xbounds2 do p.position.x = bounds.x + line_width + p.radius
+            }
+
+
+            F_net : [2]f32 =  F_particle + F_d + F_g + ((avg / cast(f32)num) if num > 0 else 0) + F_wall;
+
+            p.acceleration = F_net / p.mass;
+            p.velocity += p.acceleration * 1./FPS;
+            p.position += p.velocity * 1./FPS;
         }
-
-        ybounds1 := (p.position.y > (bounds.height + bounds.y - p.radius - line_width));
-        ybounds2 :=  p.position.y < p.radius + line_width + bounds.y;
-        xbounds1 := (p.position.x > (bounds.width + bounds.x - p.radius - line_width));
-        xbounds2 := p.position.x < line_width + p.radius + bounds.x;
-
-        F_d : [2]f32 = F_d(dynamic_viscosity_mystery, p.radius, p.velocity) if num > 0 else F_d(dynamic_viscosity_air, p.radius, p.velocity);
-        F_g : [2]f32 = F_g(p.mass);
-
-        F_wall :[2]f32 = 0
-        if ybounds1 || xbounds1 || ybounds2 || xbounds2 {
-            F_wall = -p.velocity * FPS * p.mass * 1.5 - (F_d + F_g);
-            if ybounds1 do p.position.y = bounds.height + bounds.y - p.radius - line_width + 1;
-            if xbounds1 do p.position.x = bounds.width + bounds.x - p.radius - line_width + 1;
-            if ybounds2 do p.position.y = bounds.y + line_width + p.radius - 1;
-            if xbounds2 do p.position.x = bounds.x + line_width + p.radius - 1;
-        }
-
-
-        F_net : [2]f32 =  F_d + F_g + ((avg / cast(f32)num) if num > 0 else 0) + F_wall;
-
-        p.acceleration = F_net / p.mass;
-        p.velocity += p.acceleration * 1./FPS;
-        p.position += p.velocity * 1./FPS;
 
         rl.BeginDrawing();
-
-        
-        rl.DrawText(rl.TextFormat("Acceleration: (%f, %f)", p.acceleration.x / pixels_per_meter, p.acceleration.y / pixels_per_meter), 14, 14, 20, rl.BLACK);
-        rl.DrawText(rl.TextFormat("Velocity: (%f, %f)", p.velocity.x / pixels_per_meter, p.velocity.y / pixels_per_meter), 14, 14+20+2, 20, rl.BLACK);
-        rl.DrawText(rl.TextFormat("Velocity: %f", linalg.length(p.velocity) / pixels_per_meter), 14, 14+40+2, 20, rl.BLACK);
-        rl.DrawText(rl.TextFormat("Position: (%f, %f)", p.position.x, p.position.y), 14, 14+60+2, 20, rl.BLACK);
-        
         rl.ClearBackground(rl.RAYWHITE);
-        rl.DrawCircleV(p.position, p.radius, rl.BLACK);
+
+        if (mouse_particle_idx >= 0) {
+            p := ps[mouse_particle_idx]
+            rl.DrawText(rl.TextFormat("Acceleration: (%f, %f)", p.acceleration.x / pixels_per_meter, p.acceleration.y / pixels_per_meter), 14, 14, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("Velocity: (%f, %f)", p.velocity.x / pixels_per_meter, p.velocity.y / pixels_per_meter), 14, 14+20+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("Velocity: %f", linalg.length(p.velocity) / pixels_per_meter), 14, 14+40+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("Position: (%f, %f)", p.position.x, p.position.y), 14, 14+60+2, 20, rl.BLACK);
+        }
+        
+
+
         // rl.DrawLineEx(p.position, p.position + F_d, line_width, rl.BLUE);
-        rl.DrawLineEx(p.position, p.position + F_net / pixels_per_meter, line_width, rl.PURPLE);
+        for p in ps {
+            rl.DrawCircleV(p.position, p.radius, rl.BLACK);
+            rl.DrawLineEx(p.position, p.position + p.acceleration * p.mass / pixels_per_meter, line_width, rl.PURPLE);
+        }
         rl.DrawRectangleLinesEx(bounds, line_width, rl.RED);
 
         for &field, i in fields {
@@ -207,6 +238,10 @@ main :: proc() {
         }
         
         rl.EndDrawing();
+
+        if rl.IsKeyPressed(rl.KeyboardKey.D) && mouse_particle_idx >= 0 {
+            ordered_remove(&ps, mouse_particle_idx)
+        }
 
         if delete_field >= 0 {
             selected_field = -1; ordered_remove(&fields, delete_field);
