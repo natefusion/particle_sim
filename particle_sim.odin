@@ -12,7 +12,14 @@ density_mystery :: 7874;
 pixels_per_meter : f32 : 30;
 gravity : f32 : 9.81 * pixels_per_meter;
 
+// particle aggregation
+// gamma = ((mu_0 · (71Am^2)^2)÷(2pi · (107.4nm)^3 · k_B · 296 K)) = 1.99 * 10^38
+// diameter = 107.4 nm
+// 107.4nm * 200,000 = 21.48mm = 2.148cm
+// 200,000^3 = 8 * 10^15 particles in a (2.148cm)^3 cube
+
 Particle :: struct {
+    force        : [2]f32,
     acceleration : [2]f32,
     velocity     : [2]f32,
     position     : [2]f32,
@@ -69,10 +76,12 @@ main :: proc() {
 
     rl.SetTargetFPS(rl.GetMonitorRefreshRate(rl.GetCurrentMonitor()));
     FPS := cast(f32)rl.GetMonitorRefreshRate(rl.GetCurrentMonitor());
+    dt := 1.0/FPS
 
     particle_template : Particle = {
         acceleration = {0, 0},
-        position = {500, 490},
+        velocity = {1*pixels_per_meter, 0},
+        position = {500, 450},
         density  = density_mystery / math.pow(pixels_per_meter, 3),
         radius = .2 * pixels_per_meter,
     }
@@ -81,15 +90,16 @@ main :: proc() {
     ps : [dynamic]Particle;
     append(&ps, particle_template)
 
-
-
+    particle_template.position.x += 50
+    particle_template.velocity = {0, 0}
+    append(&ps, particle_template)
 
     density_fluid : f32 = density_water / math.pow(pixels_per_meter, 3);
 
     bounds := rl.Rectangle {10, 400, 980, 100};
     line_width :: 2;
     damping_factor : f32 = 0.2;
-
+    restitution :: 0.2
 
     field_template : Velocity_Field;
     field_template.width = 100;
@@ -142,6 +152,7 @@ main :: proc() {
 
         mouse_particle_idx := -1
 
+        for &p in ps do p.force = 0
 
         for &p, p_idx in ps {
             if rl.CheckCollisionPointCircle(mousePos, p.position, p.radius) {
@@ -150,15 +161,23 @@ main :: proc() {
             avg : [2]f32= 0
             num := 0
 
-            F_particle : [2]f32 = 0            
-            for &p1, p1_idx in ps {
-                if p1_idx != p_idx {
-                    if rl.CheckCollisionCircles(p1.position, p1.radius, p.position, p.radius) {
-                        F_particle += -p.velocity * FPS * p.mass * .5 - p1.acceleration * p1.mass
-                    }
+            for &p1, p1_idx in ps[p_idx+1:] {
+                if rl.CheckCollisionCircles(p1.position, p1.radius, p.position, p.radius) {
+                    normal := linalg.normalize(p1.position - p.position)
+                    distance := linalg.distance(p.position,p1.position)
+                    minDistance := p.radius + p1.radius
+                    repulsion := normal * (minDistance - distance)
+                    
+                    momentum := p.velocity * p.mass
+                    momentum1 := p1.velocity * p1.mass
+                    force := (momentum + momentum1) / (p.mass + p1.mass) * FPS
+                    
+                    p.force -= force + repulsion * p.mass * FPS * FPS
+                    p1.force += force + repulsion * p1.mass * FPS * FPS
                 }
             }
-
+            
+            
             for &field, field_idx in fields {
                 if alt_key_down && selected_field < 0 && rl.CheckCollisionPointRec(mousePos, rl.Rectangle {field.position.x, field.position.y, field.width, field.height}) {
                     selected_field = field_idx;
@@ -190,25 +209,29 @@ main :: proc() {
             xbounds1 := (p.position.x > (bounds.width + bounds.x - p.radius - line_width));
             xbounds2 := p.position.x < line_width + p.radius + bounds.x;
 
-            F_d : [2]f32 = F_d(dynamic_viscosity_mystery, p.radius, p.velocity) if num > 0 else F_d(dynamic_viscosity_air, p.radius, p.velocity);
+            F_d : [2]f32 = 0//F_d(dynamic_viscosity_mystery, p.radius, p.velocity) if num > 0 else F_d(dynamic_viscosity_air, p.radius, p.velocity);
             F_g : [2]f32 = 0//F_g(p.mass);
+
+
 
             F_wall :[2]f32 = 0
             if ybounds1 || xbounds1 || ybounds2 || xbounds2 {
-                F_wall = -p.velocity * FPS * p.mass * 1.5 - (F_d + F_g);
+                e :: 1
+                F_wall = -p.velocity * FPS * p.mass * (1 + restitution) - (F_d + F_g);
                 if ybounds1 do p.position.y = bounds.height + bounds.y - p.radius - line_width
                 if xbounds1 do p.position.x = bounds.width + bounds.x - p.radius - line_width
                 if ybounds2 do p.position.y = bounds.y + line_width + p.radius
                 if xbounds2 do p.position.x = bounds.x + line_width + p.radius
             }
 
-
-            F_net : [2]f32 =  F_particle + F_d + F_g + ((avg / cast(f32)num) if num > 0 else 0) + F_wall;
-
+            F_particle : [2]f32 = 0
+            
+            F_net : [2]f32 =  F_d + F_g + ((avg / cast(f32)num) if num > 0 else 0) + F_wall + p.force
             p.acceleration = F_net / p.mass;
-            p.velocity += p.acceleration * 1./FPS;
-            p.position += p.velocity * 1./FPS;
+            p.velocity += p.acceleration * dt;            
+            p.position += p.velocity * dt
         }
+
 
         rl.BeginDrawing();
         rl.ClearBackground(rl.RAYWHITE);
@@ -219,6 +242,7 @@ main :: proc() {
             rl.DrawText(rl.TextFormat("Velocity: (%f, %f)", p.velocity.x / pixels_per_meter, p.velocity.y / pixels_per_meter), 14, 14+20+2, 20, rl.BLACK);
             rl.DrawText(rl.TextFormat("Velocity: %f", linalg.length(p.velocity) / pixels_per_meter), 14, 14+40+2, 20, rl.BLACK);
             rl.DrawText(rl.TextFormat("Position: (%f, %f)", p.position.x, p.position.y), 14, 14+60+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("mass: %f", p.mass), 14, 14+80+2, 20, rl.BLACK);
         }
         
 
