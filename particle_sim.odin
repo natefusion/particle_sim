@@ -80,12 +80,12 @@ main :: proc() {
 
     particle_template : Particle = {
         acceleration = {0, 0},
-        velocity = {1*pixels_per_meter, 0},
+        velocity = {5*pixels_per_meter, 0},
         position = {500, 450},
         density  = density_mystery / math.pow(pixels_per_meter, 3),
         radius = .2 * pixels_per_meter,
     }
-    particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density;
+    particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
 
     ps : [dynamic]Particle;
     append(&ps, particle_template)
@@ -99,7 +99,7 @@ main :: proc() {
     bounds := rl.Rectangle {10, 400, 980, 100};
     line_width :: 2;
     damping_factor : f32 = 0.2;
-    restitution :: 0.2
+    restitution :: 1
 
     field_template : Velocity_Field;
     field_template.width = 100;
@@ -119,21 +119,12 @@ main :: proc() {
         ctrl_key_down := rl.IsKeyDown(rl.KeyboardKey.LEFT_CONTROL);
         mousePos := rl.GetMousePosition();
 
-        // if rl.IsKeyPressed(rl.KeyboardKey.H) {
-        //     p.acceleration = 0;
-        //     p.velocity = 0;
-        // }
-
         if alt_key_down && rl.IsKeyPressed(rl.KeyboardKey.D) {
 
             delete_field = selected_field;
         }
 
         if !alt_key_down do selected_field = -1;
-
-        // if rl.IsMouseButtonPressed(rl.MouseButton.LEFT) {
-        //     p.position = mousePos;
-        // }
 
         if rl.IsKeyPressed(rl.KeyboardKey.A) {
             field_template.position.x = mousePos.x - field_template.width/2 + 10;
@@ -161,19 +152,21 @@ main :: proc() {
             avg : [2]f32= 0
             num := 0
 
-            for &p1, p1_idx in ps[p_idx+1:] {
+            for &p1 in ps[p_idx+1:] {
                 if rl.CheckCollisionCircles(p1.position, p1.radius, p.position, p.radius) {
-                    normal := linalg.normalize(p1.position - p.position)
-                    distance := linalg.distance(p.position,p1.position)
-                    minDistance := p.radius + p1.radius
-                    repulsion := normal * (minDistance - distance)
-                    
-                    momentum := p.velocity * p.mass
-                    momentum1 := p1.velocity * p1.mass
-                    force := (momentum + momentum1) / (p.mass + p1.mass) * FPS
-                    
-                    p.force -= force + repulsion * p.mass * FPS * FPS
-                    p1.force += force + repulsion * p1.mass * FPS * FPS
+                    dposition1 := p.position-p1.position
+                    dposition2 := p1.position-p.position
+                    distance := linalg.length(dposition1)
+                    distance_squared := math.pow(distance, 2)
+                    v1 := (2 * p1.mass) / (p.mass + p1.mass) * linalg.dot(p.velocity-p1.velocity, dposition1) / distance_squared * dposition1
+                    v2 := (2 * p.mass) / (p.mass + p1.mass) * linalg.dot(p1.velocity-p.velocity, dposition2) / distance_squared * dposition2
+                    p.force -= v1 * p.mass * FPS
+                    p1.force -= v2 * p1.mass * FPS
+
+                    overlap := p.radius + p1.radius - distance - 1
+                    normal := linalg.normalize(dposition1)
+                    p.position -= overlap * normal * p1.mass / (p.mass + p1.mass)
+                    p1.position += overlap * normal * p.mass / (p.mass + p1.mass)
                 }
             }
             
@@ -212,26 +205,22 @@ main :: proc() {
             F_d : [2]f32 = 0//F_d(dynamic_viscosity_mystery, p.radius, p.velocity) if num > 0 else F_d(dynamic_viscosity_air, p.radius, p.velocity);
             F_g : [2]f32 = 0//F_g(p.mass);
 
-
-
-            F_wall :[2]f32 = 0
             if ybounds1 || xbounds1 || ybounds2 || xbounds2 {
-                e :: 1
-                F_wall = -p.velocity * FPS * p.mass * (1 + restitution) - (F_d + F_g);
+                p.force -= p.velocity * p.mass * FPS * (1 + restitution)
                 if ybounds1 do p.position.y = bounds.height + bounds.y - p.radius - line_width
                 if xbounds1 do p.position.x = bounds.width + bounds.x - p.radius - line_width
                 if ybounds2 do p.position.y = bounds.y + line_width + p.radius
                 if xbounds2 do p.position.x = bounds.x + line_width + p.radius
             }
 
-            F_particle : [2]f32 = 0
-            
-            F_net : [2]f32 =  F_d + F_g + ((avg / cast(f32)num) if num > 0 else 0) + F_wall + p.force
+            F_net : [2]f32 =  F_d + F_g + ((avg / cast(f32)num) if num > 0 else 0) + p.force
             p.acceleration = F_net / p.mass;
             p.velocity += p.acceleration * dt;            
             p.position += p.velocity * dt
         }
 
+        energy : f32 = 0
+        for p in ps do energy += .5 * p.mass * linalg.dot(p.velocity, p.velocity)
 
         rl.BeginDrawing();
         rl.ClearBackground(rl.RAYWHITE);
@@ -244,6 +233,8 @@ main :: proc() {
             rl.DrawText(rl.TextFormat("Position: (%f, %f)", p.position.x, p.position.y), 14, 14+60+2, 20, rl.BLACK);
             rl.DrawText(rl.TextFormat("mass: %f", p.mass), 14, 14+80+2, 20, rl.BLACK);
         }
+
+        rl.DrawText(rl.TextFormat("energy: %f", energy), 14, 14+100+2, 20, rl.BLACK);
         
 
 
