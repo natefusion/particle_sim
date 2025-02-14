@@ -11,10 +11,11 @@ dynamic_viscosity_air ::    0.00001822;
 density_water : f32 : 1000; // 22 deg C
 density_iron : f32 : 7874; // kg/m^3
 density_mystery :: 7874;
-gravity : f32 : 9.81
+gravity : [2]f32 : {0, 9.81}
 line_width :: 2
-bounds :: rl.Rectangle {10, 40, 800, 800};
+bounds :: rl.Rectangle {10, 160, 800, 800};
 restitution :: 0.5
+radius_visual :: 10.0
 
 // particle aggregation
 // gamma = ((mu_0 · (71Am^2)^2)÷(2pi · (107.4nm)^3 · k_B · 296 K)) = 1.99 * 10^38
@@ -24,10 +25,8 @@ restitution :: 0.5
 
 Particle :: struct {
     force        : [2]f32,
-    velocity     : [2]f32,
-    velocity_partial : [2]f32,
+    position_old : [2]f32,
     position     : [2]f32,
-    position_partial : [2]f32,
     mass         :    f32,
     radius       :    f32,
     density      :    f32,
@@ -37,7 +36,7 @@ Velocity_Field :: struct {
     position : [2]f32,
     width : f32,
     height : f32,
-    field : [12][12][2]f32,
+    field : [4][4][2]f32,
 }
 
 is_nan_vec2 :: proc(x: [2]f32) -> bool {
@@ -76,10 +75,6 @@ F_d :: proc(dynamic_viscosity, radius: f32, velocity: [2]f32) -> [2]f32 {
     return -6 * math.PI * dynamic_viscosity * radius * velocity;
 }
 
-F_g :: proc(mass: f32) -> [2]f32 {
-    return {0, mass * gravity};
-}
-
 x_axis_sort :: proc(a,b : Particle) -> bool {
     return a.position.x < b.position.x
 }
@@ -96,45 +91,81 @@ intersection :: proc(a,b: [2]f32) -> bool {
     return c1 || c2 || c3 || c4
 }
 
+add_forces :: proc(p: ^Particle) {
+    F_d : [2]f32 = F_d(dynamic_viscosity_water, p.radius, p.position-p.position_old)
+    p.force += (F_d + gravity*p.mass)
+}
+
+update :: proc(p: ^Particle, dt: f32) {
+    temp := p.position
+    p.position = 2*p.position - p.position_old + p.force / p.mass * dt * dt
+    p.position_old = temp
+}
+
+resolve_collision :: proc(p, p1: ^Particle) {
+    if rl.CheckCollisionCircles(p.position, radius_visual, p1.position, radius_visual) {
+        diff := p.position - p1.position
+        dist := linalg.length(diff)
+        n := diff / dist
+        delta := 0.5 * (dist - radius_visual - radius_visual)
+        p.position -= n * delta
+        p1.position += n * delta
+    }
+}
+
+constrain :: proc(p: ^Particle) {
+    ybounds1 := (p.position.y > (bounds.height + bounds.y - radius_visual - line_width));
+    ybounds2 :=  p.position.y < radius_visual + line_width + bounds.y;
+    xbounds1 := (p.position.x > (bounds.width + bounds.x - radius_visual - line_width));
+    xbounds2 := p.position.x < line_width + radius_visual + bounds.x;
+
+    if ybounds1 || ybounds2 {
+        if ybounds1 do p.position.y = bounds.height + bounds.y - radius_visual - line_width
+        if ybounds2 do p.position.y = bounds.y + line_width + radius_visual
+        p.position_old.y = 2 * p.position.y - p.position_old.y
+    }
+
+    if xbounds1 || xbounds2 {
+        if xbounds1 do p.position.x = bounds.width + bounds.x - radius_visual - line_width
+        if xbounds2 do p.position.x = bounds.x + line_width + radius_visual
+        p.position_old.x = 2 * p.position.x - p.position_old.x
+    }
+}
+
 main :: proc() {
     rl.InitWindow(1000, 1000, "particle sim");
 
     rl.SetTargetFPS(rl.GetMonitorRefreshRate(rl.GetCurrentMonitor()));
     FPS := cast(f32)rl.GetMonitorRefreshRate(rl.GetCurrentMonitor());
 
-    max_particles :: 16384
+    max_particles :: 100
     ps : [dynamic]Particle;
 
     particle_template : Particle = {
-        velocity = {1, 0},
-        position = {500, 450},
-        density  = density_iron,
-        radius = math.pow_f32(10, -4),
+        density = density_iron,
+        radius = math.pow_f32(10, -5),
     }
-    
     particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
 
-
     for i in 0..<max_particles {
-        particle_template.position = {bounds.x+2 + rand.float32() * bounds.width, bounds.y+2 + rand.float32() * bounds.height}
-        particle_template.velocity = {2 * rand.float32() - 1, 2 * rand.float32() - 1} * 10
+        particle_template.position_old = {bounds.x+2 + rand.float32() * bounds.width, bounds.y+2 + rand.float32() * bounds.height}
+        particle_template.position = particle_template.position_old
+        // particle_template.velocity = {2 * rand.float32() - 1, 2 * rand.float32() - 1} * 50
         append(&ps, particle_template)
     }
-
-    density_fluid : f32 = density_water
-
-    damping_factor : f32 = 0.2;
 
     field_template : Velocity_Field;
     field_template.width = 100;
     field_template.height = 100;
-    field_template.position = {10, 10};
+    field_template.position = {900, 900};
     
     fields : [dynamic]Velocity_Field;
     selected_field := -1;
-    // append(&fields, field_template);
+    append(&fields, field_template);
 
     held_mouse_pos : [2]f32;
+
+    mouse_particle_idx := -1
 
     for !rl.WindowShouldClose() {
         dt := rl.GetFrameTime()
@@ -142,6 +173,7 @@ main :: proc() {
         field_chosen := false;
         alt_key_down := rl.IsKeyDown(rl.KeyboardKey.LEFT_ALT);
         ctrl_key_down := rl.IsKeyDown(rl.KeyboardKey.LEFT_CONTROL);
+        left_mouse := rl.IsMouseButtonPressed(rl.MouseButton.LEFT);
         mousePos := rl.GetMousePosition();
 
         if alt_key_down && rl.IsKeyPressed(rl.KeyboardKey.D) {
@@ -160,53 +192,20 @@ main :: proc() {
             fields[selected_field].position = mousePos - held_mouse_pos;
         }
 
-        mouse_particle_idx := -1
 
-        for &p in ps {
-            p.velocity_partial = 0
-            p.position_partial = 0
-            p.force = 0
-        }
-
-        slice.sort_by(ps[:], x_axis_sort)
-
-        for i in 1..<len(ps) {
-            p := &ps[i-1]
-            p1 := &ps[i]
-
-            l : [2]f32 = {-1,1}*p.radius + p.position.x
-            l1 : [2]f32 = {-1,1}*p1.radius + p1.position.x
-            if intersection(l, l1) {
-                if rl.CheckCollisionCircles(p1.position, p.radius, p.position, p.radius) {
-                    dposition1 := p.position-p1.position
-                    dposition2 := p1.position-p.position
-                    distance := linalg.length(dposition1)
-                    distance_squared := math.pow(distance, 2)
-                    v1 := (2 * p1.mass) / (p.mass + p1.mass) * linalg.dot(p.velocity-p1.velocity, dposition1) / distance_squared * dposition1
-                    v2 := (2 * p.mass) / (p.mass + p1.mass) * linalg.dot(p1.velocity-p.velocity, dposition2) / distance_squared * dposition2
-                    p.velocity_partial -= v1
-                    p1.velocity_partial -= v2
-                    
-                    overlap := p.radius + p1.radius - linalg.distance(p.position,p1.position)
-                    norm := linalg.normalize(p.position-p1.position)
-                    p.position_partial += overlap * norm
-                    p1.position_partial -= overlap * norm
-                }
-            }
-        }
-
+        
         for &p, p_idx in ps {
-
-            if rl.CheckCollisionPointCircle(mousePos, p.position, p.radius) {
-                mouse_particle_idx = p_idx
+            if rl.CheckCollisionPointCircle(mousePos, p.position, radius_visual) {
+                if left_mouse do mouse_particle_idx = p_idx
             }
-            avg : [2]f32= 0
+            
+            p.force = 0
+            avg : [2]f32 = 0
             num := 0
-
             for &field, field_idx in fields {
                 if alt_key_down && selected_field < 0 && rl.CheckCollisionPointRec(mousePos, rl.Rectangle {field.position.x, field.position.y, field.width, field.height}) {
-                    selected_field = field_idx;
-                    held_mouse_pos = mousePos - fields[selected_field].position;
+                    selected_field = field_idx
+                    held_mouse_pos = mousePos - field.position
                 }
 
                 for &row, i in field.field {
@@ -217,7 +216,7 @@ main :: proc() {
                         start : [2]f32 = {field.position.x + cast(f32)j*field.width/collen, field.position.y + cast(f32)i*field.height/rowlen};
                         if ctrl_key_down && field_idx == selected_field {
                             arrow := start - mousePos;
-                            col = -100 * linalg.vector_normalize(arrow);
+                            col = -1000 * linalg.vector_normalize(arrow);
                         }
 
                         diff := linalg.abs(p.position - start);
@@ -228,55 +227,39 @@ main :: proc() {
                     }
                 }
             }
-
-            ybounds1 := (p.position.y > (bounds.height + bounds.y - p.radius - line_width));
-            ybounds2 :=  p.position.y < p.radius + line_width + bounds.y;
-            xbounds1 := (p.position.x > (bounds.width + bounds.x - p.radius - line_width));
-            xbounds2 := p.position.x < line_width + p.radius + bounds.x;
-            // F_d : [2]f32 = 0//F_d(dynamic_viscosity_mystery, p.radius, p.velocity) if num > 0 else F_d(dynamic_viscosity_air, p.radius, p.velocity);
-            F_d : [2]f32 = F_d(dynamic_viscosity_water, p.radius, p.velocity)
-            F_g : [2]f32 = F_g(p.mass);
-
-            p.force += F_d
-            p.force += F_g
-
-            if ybounds1 || ybounds2 {
-                p.velocity_partial.y += -(1 + restitution) * p.velocity.y
-                if ybounds1 do p.position.y = bounds.height + bounds.y - p.radius - line_width
-                if ybounds2 do p.position.y = bounds.y + line_width + p.radius
-            }
-
-            if xbounds1 || xbounds2 {
-                p.velocity_partial.x += -(1 + restitution) * p.velocity.x
-                if xbounds1 do p.position.x = bounds.width + bounds.x - p.radius - line_width
-                if xbounds2 do p.position.x = bounds.x + line_width + p.radius
-            }
-
             p.force += ((avg / cast(f32)num) if num > 0 else 0) * p.mass
+            
+            add_forces(&p)
+            update(&p, dt)
         }
-
-        for &p in ps {
-            p.velocity += p.velocity_partial + p.force / p.mass * dt
-            p.position += p.velocity * dt + p.position_partial
+        
+        for i in 0..<len(ps) {
+            constrain(&ps[i])
+            for j in i+1..<len(ps) {
+                resolve_collision(&ps[i], &ps[j])
+            }
         }
-
-
+        
         rl.BeginDrawing();
         rl.ClearBackground(rl.RAYWHITE);
 
-        // if (mouse_particle_idx >= 0) {
-        //     p := ps[mouse_particle_idx]
-        //     // rl.DrawText(rl.TextFormat("Acceleration: (%f, %f)", p.acceleration.x / pixels_per_meter, p.acceleration.y / pixels_per_meter), 14, 14, 20, rl.BLACK);
-        //     // rl.DrawText(rl.TextFormat("Velocity: (%f, %f)", p.velocity.x / pixels_per_meter, p.velocity.y / pixels_per_meter), 14, 14+20+2, 20, rl.BLACK);
-        //     // rl.DrawText(rl.TextFormat("Velocity: %f", linalg.length(p.velocity) / pixels_per_meter), 14, 14+40+2, 20, rl.BLACK);
-        //     // rl.DrawText(rl.TextFormat("Position: (%f, %f)", p.position.x, p.position.y), 14, 14+60+2, 20, rl.BLACK);
-        //     // rl.DrawText(rl.TextFormat("mass: %f", p.mass), 14, 14+80+2, 20, rl.BLACK);
-        // }
+        if (mouse_particle_idx >= 0) {
+            p := ps[mouse_particle_idx]
+            v := (p.position - p.position_old) / dt
+            a : = p.force / p.mass
+            rl.DrawText(rl.TextFormat("Acceleration: (%f, %f) m/s^2", a.x, a.y), 14, 14, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("Acceleration: %f m/s^2", linalg.length(a)), 14, 14+20+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("Velocity: (%f, %f) m/s", v.x, v.y), 14, 14+40+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("Velocity: %f m/s", linalg.length(v)), 14, 14+60+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("Position: (%f, %f) m", p.position.x, p.position.y), 14, 14+80+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("mass: %.10f kg", p.mass), 14, 14+100+2, 20, rl.BLACK);
+        }
 
         rl.DrawFPS(14, 14+120+2)
 
-        for p in ps {
-            rl.DrawCircleV(p.position, 1 if p.radius < 1 else p.radius, rl.BLACK);
+        for p, p_idx in ps {
+            rl.DrawCircleV(p.position, radius_visual, rl.BLACK);
+            if p_idx == mouse_particle_idx do rl.DrawCircleLinesV(p.position, radius_visual+1, rl.RED);
         }
         rl.DrawRectangleLinesEx(bounds, line_width, rl.RED);
 
