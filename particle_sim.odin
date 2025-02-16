@@ -27,6 +27,7 @@ Particle :: struct {
     force        : [2]f32,
     position_old : [2]f32,
     position     : [2]f32,
+    kissing      : map[int]bool,
     mass         :    f32,
     radius       :    f32,
     density      :    f32,
@@ -102,7 +103,14 @@ update :: proc(p: ^Particle, dt: f32) {
     p.position_old = temp
 }
 
-resolve_collision :: proc(p, p1: ^Particle) {
+kiss_probability :: proc() -> f32 {
+    return math.max(rand.float32(), rand.float32())
+}
+
+resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
+    p := &ps[p_idx]
+    p1 := &ps[p1_idx]
+
     if rl.CheckCollisionCircles(p.position, radius_visual, p1.position, radius_visual) {
         diff := p.position - p1.position
         dist := linalg.length(diff)
@@ -110,6 +118,23 @@ resolve_collision :: proc(p, p1: ^Particle) {
         delta := 0.5 * (dist - radius_visual - radius_visual)
         p.position -= n * delta
         p1.position += n * delta
+
+        if !(p1_idx in p.kissing && p_idx in p1.kissing) && kiss_probability() > (1 - 0.9) {
+            p.kissing[p1_idx] = true
+            p1.kissing[p_idx] = true
+            pv := p.position - p.position_old
+            pv1 := p1.position - p1.position_old
+
+            v :[2]f32= (pv*p.mass + pv1*p1.mass)/(p.mass+p1.mass)
+        
+            p.position_old = p.position - v
+            p1.position_old = p1.position - v
+        }
+    } else {
+        if kiss_probability() > (1 - 0.3) {
+            delete_key(&p.kissing, p1_idx)
+            delete_key(&p1.kissing, p_idx)
+        }
     }
 }
 
@@ -151,6 +176,7 @@ main :: proc() {
         particle_template.position_old = {bounds.x+2 + rand.float32() * bounds.width, bounds.y+2 + rand.float32() * bounds.height}
         particle_template.position = particle_template.position_old
         // particle_template.velocity = {2 * rand.float32() - 1, 2 * rand.float32() - 1} * 50
+        particle_template.kissing = make(type_of(particle_template.kissing))
         append(&ps, particle_template)
     }
 
@@ -229,15 +255,19 @@ main :: proc() {
             }
             p.force += ((avg / cast(f32)num) if num > 0 else 0) * p.mass
             
-            add_forces(&p)
-            update(&p, dt)
+
         }
         
         for i in 0..<len(ps) {
             constrain(&ps[i])
             for j in i+1..<len(ps) {
-                resolve_collision(&ps[i], &ps[j])
+                resolve_collision(ps[:], i, j)
             }
+        }
+
+        for &p in ps {
+            add_forces(&p)
+            update(&p, dt)
         }
         
         rl.BeginDrawing();
@@ -252,7 +282,7 @@ main :: proc() {
             rl.DrawText(rl.TextFormat("Velocity: (%f, %f) m/s", v.x, v.y), 14, 14+40+2, 20, rl.BLACK);
             rl.DrawText(rl.TextFormat("Velocity: %f m/s", linalg.length(v)), 14, 14+60+2, 20, rl.BLACK);
             rl.DrawText(rl.TextFormat("Position: (%f, %f) m", p.position.x, p.position.y), 14, 14+80+2, 20, rl.BLACK);
-            rl.DrawText(rl.TextFormat("mass: %.10f kg", p.mass), 14, 14+100+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("mass: %.10f kg,\ttouching: %d", p.mass, len(p.kissing)), 14, 14+100+2, 20, rl.BLACK);
         }
 
         rl.DrawFPS(14, 14+120+2)
