@@ -8,43 +8,53 @@ import "core:slice"
 dynamic_viscosity_water :: 0.0010016; // 68 deg F kg/(ms)
 dynamic_viscosity_mystery :: 1;
 dynamic_viscosity_air ::    0.00001822;
-density_water : f32 : 1000; // 22 deg C
-density_iron : f32 : 7874; // kg/m^3
+density_water : f64 : 1000; // 22 deg C
+density_iron : f64 : 7874; // kg/m^3
 density_mystery :: 7874;
-gravity : [2]f32 : {0, 9.81}
+gravity : [2]f64 : {0, 9.81}
 line_width :: 2
-bounds :: rl.Rectangle {10, 160, 800, 800};
+bounds :: rl.Rectangle {10, 160, 800, 800}
+bounds_ugh :: Big_Rect {x=cast(f64)bounds.x, y=cast(f64)bounds.y, width=cast(f64)bounds.width, height=cast(f64)bounds.height}
 restitution :: 0.5
-radius_visual :: 10.0
+radius_visual :: 2.0
+METER_PER_PX :f64: 1.0 / 1000.0
+
+Big_Rect :: struct {
+    width, height, x, y: f64
+}
 
 // particle aggregation
 // gamma = ((mu_0 · (71Am^2)^2)÷(2pi · (107.4nm)^3 · k_B · 296 K)) = 1.99 * 10^38
 // diameter = 107.4 nm
 // 107.4nm * 200,000 = 21.48mm = 2.148cm
 // 200,000^3 = 8 * 10^15 particles in a (2.148cm)^3 cube
+Empty :: struct {}
+Set_int :: map[int]Empty
 
 Particle :: struct {
-    force        : [2]f32,
-    position_old : [2]f32,
-    position     : [2]f32,
-    kissing      : map[int]bool,
-    mass         :    f32,
-    radius       :    f32,
-    density      :    f32,
+    force        : [2]f64,
+    position_old : [2]f64,
+    position     : [2]f64,
+    kissing      : Set_int,
+    mass         :    f64,
+    radius       :    f64,
+    density      :    f64,
 }
 
 Velocity_Field :: struct {
-    position : [2]f32,
-    width : f32,
-    height : f32,
-    field : [4][4][2]f32,
+    position : [2]f64,
+    width : f64,
+    height : f64,
+    field : [4][4][2]f64,
 }
 
-is_nan_vec2 :: proc(x: [2]f32) -> bool {
-    return math.is_nan_f32(x[0]) || math.is_nan_f32(x[1])
+CheckCollisionPointCircle :: proc(point, center: [2]f64, radius: f64) -> (collision: bool) {
+    distanceSquared := (point.x - center.x)*(point.x - center.x) + (point.y - center.y)*(point.y - center.y);
+    collision = distanceSquared <= radius*radius
+    return
 }
 
-sphere_volume :: proc(radius: f32) -> f32 {
+sphere_volume :: proc(radius: f64) -> f64 {
     return 4 * math.PI / 3 * math.pow(radius, 3);
 }
 
@@ -52,14 +62,26 @@ draw_velocity_field :: proc(field : ^Velocity_Field) {
     for row, i in field.field {
         rowlen := cast(f32)len(field.field);
         for col, j in row {
+            col : [2]f32 = {cast(f32)col.x, cast(f32)col.y}
             collen := cast(f32)len(row);
-            start : [2]f32 = {field.position.x + cast(f32)j*field.width/collen, field.position.y + cast(f32)i*field.height/rowlen};
+            start : [2]f32 = {cast(f32)field.position.x + cast(f32)j*cast(f32)field.width/collen, cast(f32)field.position.y + cast(f32)i*cast(f32)field.height/rowlen};
             rl.DrawLineEx(start,
                           start + linalg.normalize(col)*20,
                           1,
                           rl.GREEN);
 
             rl.DrawCircleV(start, 2, rl.GREEN);
+        }
+    }
+}
+
+draw_magnetic_field :: proc(magnet: [2]f64) {
+    for i:f32=bounds.x; i < bounds.x+bounds.width; i+=50 {
+        for j:f32=bounds.y; j < bounds.y+bounds.height; j+=50 {
+            x :[2]f64= {cast(f64)i,cast(f64)j}
+            F := F_m(magnet, x)
+            d := linalg.length([2]f32{cast(f32)F.x,cast(f32)F.y}) / 1
+            rl.DrawCircleV({i,j}, d, rl.GREEN)
         }
     }
 }
@@ -72,16 +94,30 @@ draw_velocity_field :: proc(field : ^Velocity_Field) {
 // smooth surfaces
 // particles no do interfere with each other (problem?)
 
-F_d :: proc(dynamic_viscosity, radius: f32, velocity: [2]f32) -> [2]f32 {
+F_d :: proc(dynamic_viscosity, radius: f64, velocity: [2]f64) -> [2]f64 {
     return -6 * math.PI * dynamic_viscosity * radius * velocity;
+}
+
+F_m :: proc(magnet: [2]f64, particle: [2]f64) -> (out: [2]f64) {
+    x := (magnet - particle) * METER_PER_PX
+    // north facing sensor
+    a :: 0.06941
+    b :: -0.05959
+    c :: 3.86
+    d :: 2.568
+
+    mag := a / math.pow_f64(linalg.length(x) - b, c) + d 
+    dir := linalg.normalize(x)
+    out = mag * dir / 1000000 // Gauss, not force, who cares
+    return
 }
 
 x_axis_sort :: proc(a,b : Particle) -> bool {
     return a.position.x < b.position.x
 }
 
-intersection :: proc(a,b: [2]f32) -> bool {
-    inside :: proc(a: f32, b: [2]f32) -> bool {
+intersection :: proc(a,b: [2]f64) -> bool {
+    inside :: proc(a: f64, b: [2]f64) -> bool {
         return a >= b[0] && a <= b[1]
     }
     c1 := inside(a[0], b)
@@ -92,26 +128,39 @@ intersection :: proc(a,b: [2]f32) -> bool {
     return c1 || c2 || c3 || c4
 }
 
-add_forces :: proc(p: ^Particle) {
-    F_d : [2]f32 = F_d(dynamic_viscosity_water, p.radius, p.position-p.position_old)
-    p.force += (F_d + gravity*p.mass)
+add_forces :: proc(p: ^Particle, magnet: [2]f64) {
+    F_d : [2]f64 = F_d(dynamic_viscosity_water, p.radius, p.position-p.position_old)
+    F_m : [2]f64 = F_m(magnet, p.position)
+    p.force += (F_d + F_m + gravity*p.mass)
 }
 
-update :: proc(p: ^Particle, dt: f32) {
+update :: proc(p: ^Particle, dt: f64) {
     temp := p.position
     p.position = 2*p.position - p.position_old + p.force / p.mass * dt * dt
     p.position_old = temp
 }
 
-kiss_probability :: proc() -> f32 {
-    return math.max(rand.float32(), rand.float32())
+kiss_probability :: proc() -> f64 {
+    return math.max(rand.float64(), rand.float64())
+}
+
+CheckCollisionCircles :: proc(center1: [2]f64, radius1: f64, center2: [2]f64, radius2: f64) -> (collision: bool) {
+    dx := center2.x - center1.x      // X distance between centers
+    dy := center2.y - center1.y      // Y distance between centers
+
+    distanceSquared := dx*dx + dy*dy // Distance between centers squared
+    radiusSum := radius1 + radius2
+
+    collision = (distanceSquared <= (radiusSum*radiusSum))
+
+    return
 }
 
 resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
     p := &ps[p_idx]
     p1 := &ps[p1_idx]
 
-    if rl.CheckCollisionCircles(p.position, radius_visual, p1.position, radius_visual) {
+    if CheckCollisionCircles(p.position, radius_visual, p1.position, radius_visual) {
         diff := p.position - p1.position
         dist := linalg.length(diff)
         n := diff / dist
@@ -120,18 +169,18 @@ resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
         p1.position += n * delta
 
         if !(p1_idx in p.kissing && p_idx in p1.kissing) && kiss_probability() > (1 - 0.9) {
-            p.kissing[p1_idx] = true
-            p1.kissing[p_idx] = true
+            p.kissing[p1_idx] = {}
+            p1.kissing[p_idx] = {}
             pv := p.position - p.position_old
             pv1 := p1.position - p1.position_old
 
-            v :[2]f32= (pv*p.mass + pv1*p1.mass)/(p.mass+p1.mass)
+            v :[2]f64= (pv*p.mass + pv1*p1.mass)/(p.mass+p1.mass)
         
             p.position_old = p.position - v
             p1.position_old = p1.position - v
         }
     } else {
-        if kiss_probability() > (1 - 0.3) {
+        if kiss_probability() > (1 - 0.1) {
             delete_key(&p.kissing, p1_idx)
             delete_key(&p1.kissing, p_idx)
         }
@@ -139,20 +188,20 @@ resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
 }
 
 constrain :: proc(p: ^Particle) {
-    ybounds1 := (p.position.y > (bounds.height + bounds.y - radius_visual - line_width));
-    ybounds2 :=  p.position.y < radius_visual + line_width + bounds.y;
-    xbounds1 := (p.position.x > (bounds.width + bounds.x - radius_visual - line_width));
-    xbounds2 := p.position.x < line_width + radius_visual + bounds.x;
+    ybounds1 := (p.position.y > (bounds_ugh.height + bounds_ugh.y - radius_visual - line_width));
+    ybounds2 :=  p.position.y < radius_visual + line_width + bounds_ugh.y;
+    xbounds1 := (p.position.x > (bounds_ugh.width + bounds_ugh.x - radius_visual - line_width));
+    xbounds2 := p.position.x < line_width + radius_visual + bounds_ugh.x;
 
     if ybounds1 || ybounds2 {
-        if ybounds1 do p.position.y = bounds.height + bounds.y - radius_visual - line_width
-        if ybounds2 do p.position.y = bounds.y + line_width + radius_visual
+        if ybounds1 do p.position.y = bounds_ugh.height + bounds_ugh.y - radius_visual - line_width
+        if ybounds2 do p.position.y = bounds_ugh.y + line_width + radius_visual
         p.position_old.y = 2 * p.position.y - p.position_old.y
     }
 
     if xbounds1 || xbounds2 {
-        if xbounds1 do p.position.x = bounds.width + bounds.x - radius_visual - line_width
-        if xbounds2 do p.position.x = bounds.x + line_width + radius_visual
+        if xbounds1 do p.position.x = bounds_ugh.width + bounds_ugh.x - radius_visual - line_width
+        if xbounds2 do p.position.x = bounds_ugh.x + line_width + radius_visual
         p.position_old.x = 2 * p.position.x - p.position_old.x
     }
 }
@@ -161,19 +210,20 @@ main :: proc() {
     rl.InitWindow(1000, 1000, "particle sim");
 
     rl.SetTargetFPS(rl.GetMonitorRefreshRate(rl.GetCurrentMonitor()));
-    FPS := cast(f32)rl.GetMonitorRefreshRate(rl.GetCurrentMonitor());
+    FPS := cast(f64)rl.GetMonitorRefreshRate(rl.GetCurrentMonitor());
 
-    max_particles :: 100
+    max_particles :: 1000
     ps : [dynamic]Particle;
 
     particle_template : Particle = {
         density = density_iron,
-        radius = math.pow_f32(10, -5),
+        radius = math.pow_f64(10, -4),
     }
     particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
+    fmt.println(particle_template.mass)
 
     for i in 0..<max_particles {
-        particle_template.position_old = {bounds.x+2 + rand.float32() * bounds.width, bounds.y+2 + rand.float32() * bounds.height}
+        particle_template.position_old = {bounds_ugh.x+2 + rand.float64() * bounds_ugh.width, bounds_ugh.y+2 + rand.float64() * bounds_ugh.height}
         particle_template.position = particle_template.position_old
         // particle_template.velocity = {2 * rand.float32() - 1, 2 * rand.float32() - 1} * 50
         particle_template.kissing = make(type_of(particle_template.kissing))
@@ -189,18 +239,24 @@ main :: proc() {
     selected_field := -1;
     append(&fields, field_template);
 
-    held_mouse_pos : [2]f32;
+    held_mouse_pos : [2]f64;
 
     mouse_particle_idx := -1
 
+    magnet: [2]f64 = {100, 100};
+    radius_magnet :: 20
+    magnet_selected := false
+
     for !rl.WindowShouldClose() {
-        dt := rl.GetFrameTime()
+        dt := cast(f64)rl.GetFrameTime()
         delete_field := -1;
         field_chosen := false;
         alt_key_down := rl.IsKeyDown(rl.KeyboardKey.LEFT_ALT);
         ctrl_key_down := rl.IsKeyDown(rl.KeyboardKey.LEFT_CONTROL);
         left_mouse := rl.IsMouseButtonPressed(rl.MouseButton.LEFT);
-        mousePos := rl.GetMousePosition();
+        mousePos32 := rl.GetMousePosition();
+        mousePos : [2]f64 = {cast(f64)mousePos32.x, cast(f64)mousePos32.y}
+        
 
         if alt_key_down && rl.IsKeyPressed(rl.KeyboardKey.D) {
             delete_field = selected_field;
@@ -219,27 +275,35 @@ main :: proc() {
         }
 
 
+
+        if left_mouse && CheckCollisionPointCircle(mousePos, magnet, radius_magnet) {
+            magnet_selected = !magnet_selected
+        }
+
+        if magnet_selected {
+            magnet = mousePos
+        }
         
         for &p, p_idx in ps {
-            if rl.CheckCollisionPointCircle(mousePos, p.position, radius_visual) {
+            if CheckCollisionPointCircle(mousePos, p.position, radius_visual) {
                 if left_mouse do mouse_particle_idx = p_idx
             }
             
             p.force = 0
-            avg : [2]f32 = 0
+            avg : [2]f64 = 0
             num := 0
             for &field, field_idx in fields {
-                if alt_key_down && selected_field < 0 && rl.CheckCollisionPointRec(mousePos, rl.Rectangle {field.position.x, field.position.y, field.width, field.height}) {
+                if alt_key_down && selected_field < 0 && rl.CheckCollisionPointRec(mousePos32, rl.Rectangle {cast(f32)field.position.x, cast(f32)field.position.y, cast(f32)field.width, cast(f32)field.height}) {
                     selected_field = field_idx
                     held_mouse_pos = mousePos - field.position
                 }
 
                 for &row, i in field.field {
-                    rowlen := cast(f32)len(field.field);
+                    rowlen := cast(f64)len(field.field);
 
                     for &col, j in row {
-                        collen := cast(f32)len(row);
-                        start : [2]f32 = {field.position.x + cast(f32)j*field.width/collen, field.position.y + cast(f32)i*field.height/rowlen};
+                        collen := cast(f64)len(row);
+                        start : [2]f64 = {field.position.x + cast(f64)j*field.width/collen, field.position.y + cast(f64)i*field.height/rowlen};
                         if ctrl_key_down && field_idx == selected_field {
                             arrow := start - mousePos;
                             col = -1000 * linalg.vector_normalize(arrow);
@@ -253,7 +317,7 @@ main :: proc() {
                     }
                 }
             }
-            p.force += ((avg / cast(f32)num) if num > 0 else 0) * p.mass
+            p.force += ((avg / cast(f64)num) if num > 0 else 0) * p.mass
             
 
         }
@@ -266,7 +330,7 @@ main :: proc() {
         }
 
         for &p in ps {
-            add_forces(&p)
+            add_forces(&p, magnet)
             update(&p, dt)
         }
         
@@ -288,17 +352,26 @@ main :: proc() {
         rl.DrawFPS(14, 14+120+2)
 
         for p, p_idx in ps {
-            rl.DrawCircleV(p.position, radius_visual, rl.BLACK);
-            if p_idx == mouse_particle_idx do rl.DrawCircleLinesV(p.position, radius_visual+1, rl.RED);
+            pos : [2]f32 = {cast(f32)p.position.x, cast(f32)p.position.y}
+            rl.DrawCircleV(pos, radius_visual, rl.BLACK);
+            // if p_idx == mouse_particle_idx do rl.DrawCircleLinesV(pos, radius_visual+1, rl.RED);
         }
-        rl.DrawRectangleLinesEx(bounds, line_width, rl.RED);
+
 
         for &field, i in fields {
             if i == selected_field {
-                rl.DrawRectangleLinesEx(rl.Rectangle{field.position.x-10, field.position.y-10, field.width, field.height}, line_width, rl.RED)
+                rl.DrawRectangleLinesEx(rl.Rectangle{cast(f32)field.position.x-10, cast(f32)field.position.y-10, cast(f32)field.width, cast(f32)field.height}, line_width, rl.RED)
             }
             draw_velocity_field(&field);
         }
+
+        // draw_magnetic_field(magnet)
+
+        mag := [2]f32{cast(f32)magnet.x, cast(f32)magnet.y}
+        rl.DrawCircleV(mag, radius_magnet, rl.BLUE);
+        if magnet_selected do rl.DrawCircleLinesV(mag, radius_magnet+1, rl.RED);
+
+        rl.DrawRectangleLinesEx(bounds, line_width, rl.RED);
         
         rl.EndDrawing();
 
