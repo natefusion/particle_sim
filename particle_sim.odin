@@ -5,19 +5,21 @@ import "core:math"
 import "core:math/linalg"
 import "core:math/rand"
 import "core:slice"
-dynamic_viscosity_water :: 0.0010016; // 68 deg F kg/(ms)
-dynamic_viscosity_mystery :: 1;
-dynamic_viscosity_air ::    0.00001822;
-density_water : f64 : 1000; // 22 deg C
-density_iron : f64 : 7874; // kg/m^3
-density_mystery :: 7874;
-gravity : [2]f64 : {0, 9.81}
+NM_PER_M : f64 : 10e9
+NG_PER_KG : f64 : 10e12
+dynamic_viscosity_water :: 0.0010016 * NG_PER_KG / NM_PER_M; // 68 deg Fahrenheit ng/(nm*s)
+dynamic_viscosity_mystery :: 1 * NG_PER_KG / NM_PER_M; // ng/(nm*s)
+dynamic_viscosity_air ::    0.00001822 * NG_PER_KG / NM_PER_M; // ng/(nm*s)
+density_water : f64 : 1000 * NG_PER_KG / (NM_PER_M * NM_PER_M * NM_PER_M); // 22 deg C, ng/nm^3
+density_iron : f64 : 7874 * NG_PER_KG / (NM_PER_M * NM_PER_M * NM_PER_M); // ng/nm^3
+gravity : [2]f64 : {0, 9.81 * NM_PER_M} // nm/s^2
 line_width :: 2
 bounds :: rl.Rectangle {10, 160, 800, 800}
 bounds_ugh :: Big_Rect {x=cast(f64)bounds.x, y=cast(f64)bounds.y, width=cast(f64)bounds.width, height=cast(f64)bounds.height}
 restitution :: 0.5
-radius_visual :: 2.0
-METER_PER_PX :f64: 1.0 / 1000.0
+radius_visual :: 10.0
+NM_PER_PX :f64: 100_000_000.0
+
 
 Big_Rect :: struct {
     width, height, x, y: f64
@@ -99,7 +101,7 @@ F_d :: proc(dynamic_viscosity, radius: f64, velocity: [2]f64) -> [2]f64 {
 }
 
 F_m :: proc(magnet: [2]f64, particle: [2]f64) -> (out: [2]f64) {
-    x := (magnet - particle) * METER_PER_PX
+    x := (magnet - particle) * NM_PER_PX
     // north facing sensor
     a :: 0.06941
     b :: -0.05959
@@ -108,7 +110,7 @@ F_m :: proc(magnet: [2]f64, particle: [2]f64) -> (out: [2]f64) {
 
     mag := a / math.pow_f64(linalg.length(x) - b, c) + d 
     dir := linalg.normalize(x)
-    out = mag * dir / 1000000 // Gauss, not force, who cares
+    out = mag * dir * 100000 // Gauss, not force, who cares
     return
 }
 
@@ -136,7 +138,9 @@ add_forces :: proc(p: ^Particle, magnet: [2]f64) {
 
 update :: proc(p: ^Particle, dt: f64) {
     temp := p.position
-    p.position = 2*p.position - p.position_old + p.force / p.mass * dt * dt
+    a := p.force / p.mass
+    x := a * dt * dt / NM_PER_PX
+    p.position = 2*p.position - p.position_old + x
     p.position_old = temp
 }
 
@@ -212,12 +216,12 @@ main :: proc() {
     rl.SetTargetFPS(rl.GetMonitorRefreshRate(rl.GetCurrentMonitor()));
     FPS := cast(f64)rl.GetMonitorRefreshRate(rl.GetCurrentMonitor());
 
-    max_particles :: 1000
+    max_particles :: 100
     ps : [dynamic]Particle;
 
     particle_template : Particle = {
         density = density_iron,
-        radius = math.pow_f64(10, -4),
+        radius = 100, // nm
     }
     particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
     fmt.println(particle_template.mass)
