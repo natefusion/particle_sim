@@ -14,11 +14,17 @@ density_water : f64 : 1000 * NG_PER_KG / (NM_PER_M * NM_PER_M * NM_PER_M); // 22
 density_iron : f64 : 7874 * NG_PER_KG / (NM_PER_M * NM_PER_M * NM_PER_M); // ng/nm^3
 gravity : [2]f64 : {0, 9.81 * NM_PER_M} // nm/s^2
 line_width :: 2
-bounds :: rl.Rectangle {10, 160, 800, 800}
+bounds :: rl.Rectangle {10, 10, 700, 700}
 bounds_ugh :: Big_Rect {x=cast(f64)bounds.x, y=cast(f64)bounds.y, width=cast(f64)bounds.width, height=cast(f64)bounds.height}
 restitution :: 0.5
 radius_visual :: 10.0
 NM_PER_PX :f64: 100_000_000.0
+
+
+Wall :: struct {
+    start: [2]f64,
+    end: [2]f64,
+}
 
 
 Big_Rect :: struct {
@@ -48,6 +54,12 @@ Velocity_Field :: struct {
     width : f64,
     height : f64,
     field : [4][4][2]f64,
+}
+
+draw_wall :: proc(wall : Wall) {
+    start := [2]f32{cast(f32)wall.start.x, cast(f32)wall.start.y}
+    end := [2]f32{cast(f32)wall.end.x, cast(f32)wall.end.y}
+    rl.DrawLineEx(start, end, line_width, rl.PURPLE)
 }
 
 CheckCollisionPointCircle :: proc(point, center: [2]f64, radius: f64) -> (collision: bool) {
@@ -131,9 +143,10 @@ intersection :: proc(a,b: [2]f64) -> bool {
 }
 
 add_forces :: proc(p: ^Particle, magnet: [2]f64) {
-    F_d : [2]f64 = F_d(dynamic_viscosity_water, p.radius, p.position-p.position_old)
-    F_m : [2]f64 = F_m(magnet, p.position)
-    p.force += (F_d + F_m + gravity*p.mass)
+    F_d : [2]f64 = F_d(dynamic_viscosity_mystery, p.radius, p.position-p.position_old)
+    F_m : [2]f64 = 0//F_m(magnet, p.position)
+    F_g : [2]f64 = gravity * p.mass
+    p.force += F_d + F_m + F_g
 }
 
 update :: proc(p: ^Particle, dt: f64) {
@@ -191,22 +204,40 @@ resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
     }
 }
 
-constrain :: proc(p: ^Particle) {
-    ybounds1 := (p.position.y > (bounds_ugh.height + bounds_ugh.y - radius_visual - line_width));
-    ybounds2 :=  p.position.y < radius_visual + line_width + bounds_ugh.y;
-    xbounds1 := (p.position.x > (bounds_ugh.width + bounds_ugh.x - radius_visual - line_width));
-    xbounds2 := p.position.x < line_width + radius_visual + bounds_ugh.x;
+closest_point_on_segment :: proc(point: [2]f64, line_start: [2]f64, line_end: [2]f64) -> [2]f64 {
+    line_vec := line_end - line_start
+    point_vec := point - line_start
+    t := linalg.dot(point_vec, line_vec) / linalg.length2(line_vec)
+    t = max(0, min(1, t))
+    return line_start + t * line_vec
+}
 
-    if ybounds1 || ybounds2 {
-        if ybounds1 do p.position.y = bounds_ugh.height + bounds_ugh.y - radius_visual - line_width
-        if ybounds2 do p.position.y = bounds_ugh.y + line_width + radius_visual
-        p.position_old.y = 2 * p.position.y - p.position_old.y
-    }
+check_particle_wall_collision :: proc(particle: ^Particle, wall: Wall) {
+    closest := closest_point_on_segment(particle.position, wall.start, wall.end)
+    dist_vec := particle.position - closest
+    distance := linalg.length(dist_vec)
+    if linalg.is_nan(distance) do fmt.println("distance nan")
+    
+    if distance < radius_visual - line_width/2.0 {
+        normal := linalg.normalize(dist_vec) if linalg.length(dist_vec) != 0 else {1, 0}
+        if linalg.any(linalg.is_nan_array(normal)) do fmt.println("normal nan")
 
-    if xbounds1 || xbounds2 {
-        if xbounds1 do p.position.x = bounds_ugh.width + bounds_ugh.x - radius_visual - line_width
-        if xbounds2 do p.position.x = bounds_ugh.x + line_width + radius_visual
-        p.position_old.x = 2 * p.position.x - p.position_old.x
+        overlap := radius_visual - distance + line_width/2.0
+        particle.position += normal * overlap
+        
+        particle.position_old -= 2 * linalg.dot(normal, particle.position - particle.position_old) * normal
+
+        endpoints := [2][2]f64{wall.start, wall.end};
+        for endpoint in endpoints {
+            dist_vec := particle.position - endpoint
+            distance := linalg.length(dist_vec)
+            if distance < radius_visual - line_width/2.0 {
+                normal = linalg.normalize(dist_vec) if linalg.length(dist_vec) != 0 else {1,0}
+                overlap = radius_visual - distance + line_width/2.0
+                particle.position += normal * overlap
+                particle.position_old -= 2 * linalg.dot(normal, particle.position - particle.position_old) * normal
+            }
+        }
     }
 }
 
@@ -221,7 +252,7 @@ main :: proc() {
 
     particle_template : Particle = {
         density = density_iron,
-        radius = 100, // nm
+        radius = 200, // nm
     }
     particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
     fmt.println(particle_template.mass)
@@ -229,7 +260,6 @@ main :: proc() {
     for i in 0..<max_particles {
         particle_template.position_old = {bounds_ugh.x+2 + rand.float64() * bounds_ugh.width, bounds_ugh.y+2 + rand.float64() * bounds_ugh.height}
         particle_template.position = particle_template.position_old
-        // particle_template.velocity = {2 * rand.float32() - 1, 2 * rand.float32() - 1} * 50
         particle_template.kissing = make(type_of(particle_template.kissing))
         append(&ps, particle_template)
     }
@@ -250,6 +280,14 @@ main :: proc() {
     magnet: [2]f64 = {100, 100};
     radius_magnet :: 20
     magnet_selected := false
+
+    walls : [dynamic]Wall;
+    append(&walls,
+           Wall {start = {10, 10},end = {20, 900}}, // left
+           Wall {start = {20, 900},end = {900, 700}}, // bottom
+           Wall {start = {900, 700},end = {900, 20}}, // right
+           Wall {start = {900, 10},end = {10, 10}}, // top
+          )
 
     for !rl.WindowShouldClose() {
         dt := cast(f64)rl.GetFrameTime()
@@ -322,14 +360,15 @@ main :: proc() {
                 }
             }
             p.force += ((avg / cast(f64)num) if num > 0 else 0) * p.mass
-            
-
         }
         
         for i in 0..<len(ps) {
-            constrain(&ps[i])
             for j in i+1..<len(ps) {
                 resolve_collision(ps[:], i, j)
+            }
+
+            for j in 0..<len(walls) {
+                check_particle_wall_collision(&ps[i], walls[j]);
             }
         }
 
@@ -367,6 +406,10 @@ main :: proc() {
                 rl.DrawRectangleLinesEx(rl.Rectangle{cast(f32)field.position.x-10, cast(f32)field.position.y-10, cast(f32)field.width, cast(f32)field.height}, line_width, rl.RED)
             }
             draw_velocity_field(&field);
+        }
+
+        for wall in walls {
+            draw_wall(wall);
         }
 
         // draw_magnetic_field(magnet)
