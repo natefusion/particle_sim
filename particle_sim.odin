@@ -294,7 +294,7 @@ main :: proc() {
            Wall {start = {400, 227},end = {344, 227}},
            Wall {start = {344, 227},end = {344, 170}},
            Wall {start = {344, 170},end = {250, 30}},
-           Wall {start = {250, 30},end = {200, 30}},
+           Wall {start = {250, 30},end = {200, 30}}, // left outlet
            // Wall {start = {10, 10},end = {20, 900}}, // left
            // Wall {start = {20, 900},end = {900, 700}}, // bottom
            // Wall {start = {900, 700},end = {900, 20}}, // right
