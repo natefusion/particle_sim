@@ -17,9 +17,15 @@ line_width :: 2
 bounds :: rl.Rectangle {10, 10, 700, 700}
 bounds_ugh :: Big_Rect {x=cast(f64)bounds.x, y=cast(f64)bounds.y, width=cast(f64)bounds.width, height=cast(f64)bounds.height}
 restitution :: 0.5
-radius_visual :: 10.0
+radius_visual :: 5.0
 NM_PER_PX :f64: 100_000_000.0
 
+left_outlet_count := 0
+right_outlet_count := 0
+
+
+// if true, particles don't kiss
+incel :: false
 
 Wall :: struct {
     start: [2]f64,
@@ -181,9 +187,11 @@ resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
         p.position -= n * delta
         p1.position += n * delta
 
-        if !(p1_idx in p.kissing && p_idx in p1.kissing) && kiss_probability() > (1 - 0.9) {
-            p.kissing[p1_idx] = {}
-            p1.kissing[p_idx] = {}
+        if incel || !(p1_idx in p.kissing && p_idx in p1.kissing) && kiss_probability() > (1 - 0.9) {
+            if !incel {
+                p.kissing[p1_idx] = {}
+                p1.kissing[p_idx] = {}
+            }
             pv := p.position - p.position_old
             pv1 := p1.position - p1.position_old
 
@@ -193,7 +201,7 @@ resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
             p1.position_old = p1.position - v
         }
     } else {
-        if kiss_probability() > (1 - 0.1) {
+        if !incel && kiss_probability() > (1 - 0.1) {
             delete_key(&p.kissing, p1_idx)
             delete_key(&p1.kissing, p_idx)
         }
@@ -286,12 +294,19 @@ change_force_point_strength :: proc(p: ^Force_Point, mouse_pos: [2]f64) {
 
 null_callback :: proc(p: ^Particle) {}
 
-inlet_callback :: proc(p: ^Particle) {
+inlet_callback :: proc(p: ^Particle) {}
+
+
+left_outlet_callback :: proc(p: ^Particle) {
+    p.disabled = true
+    left_outlet_count += 1
 }
 
-outlet_callback :: proc(p: ^Particle) {
+right_outlet_callback :: proc(p: ^Particle) {
+    right_outlet_count += 1
     p.disabled = true
 }
+
 
 main :: proc() {
     rl.InitWindow(1000, 1000, "particle sim");
@@ -307,12 +322,12 @@ main :: proc() {
            Wall {start = {191, 969},end = {241, 969}, callback = inlet_callback}, // inlet 
            Wall {start = {241, 969},end = {513, 202}, callback = null_callback},
            Wall {start = {513, 202},end = {484, 30}, callback = null_callback},
-           Wall {start = {484, 30},end = {434, 30}, callback = outlet_callback}, // right outlet
+           Wall {start = {484, 30},end = {434, 30}, callback = right_outlet_callback}, // right outlet
            Wall {start = {434, 30},end = {400, 227}, callback = null_callback},
            Wall {start = {400, 227},end = {344, 227}, callback = null_callback},
            Wall {start = {344, 227},end = {344, 170}, callback = null_callback},
            Wall {start = {344, 170},end = {250, 30}, callback = null_callback},
-           Wall {start = {250, 30},end = {200, 30}, callback = outlet_callback}, // left outlet
+           Wall {start = {250, 30},end = {200, 30}, callback = left_outlet_callback}, // left outlet
           )
 
     force_points : [dynamic]Force_Point
@@ -363,9 +378,10 @@ main :: proc() {
         if magnet_selected {
             magnet = mousePos
         }
-        
+
+        for p, i in ps do if p.disabled do unordered_remove(&ps, i)
+
         for &p, p_idx in ps {
-            if p.disabled do continue
             if CheckCollisionPointCircle(mousePos, p.position, radius_visual) {
                 if left_mouse do mouse_particle_idx = p_idx
             }
@@ -388,7 +404,6 @@ main :: proc() {
         }
         
         for i in 0..<len(ps) {
-            if ps[i].disabled do continue
             for j in i+1..<len(ps) {
                 resolve_collision(ps[:], i, j)
             }
@@ -399,7 +414,6 @@ main :: proc() {
         }
 
         for &p in ps {
-            if p.disabled do continue
             add_forces(&p, magnet)
             update(&p, dt)
         }
@@ -407,6 +421,7 @@ main :: proc() {
         rl.BeginDrawing();
         rl.ClearBackground(rl.RAYWHITE);
 
+        if mouse_particle_idx >= len(ps) do mouse_particle_idx = -1
         if (mouse_particle_idx >= 0) {
             p := ps[mouse_particle_idx]
             v := (p.position - p.position_old) / dt
@@ -419,10 +434,11 @@ main :: proc() {
             rl.DrawText(rl.TextFormat("mass: %.10f kg,\ttouching: %d", p.mass, len(p.kissing)), 14, 14+100+2, 20, rl.BLACK);
         }
 
+        rl.DrawText(rl.TextFormat("left outlet: %d\nRight outlet: %d", left_outlet_count, right_outlet_count), 800, 10, 20, rl.BLACK)
+
         rl.DrawFPS(14, 14+120+2)
 
         for p, p_idx in ps {
-            if p.disabled do continue
             pos : [2]f32 = {cast(f32)p.position.x, cast(f32)p.position.y}
             rl.DrawCircleV(pos, radius_visual, rl.BLACK);
             // if p_idx == mouse_particle_idx do rl.DrawCircleLinesV(pos, radius_visual+1, rl.RED);
