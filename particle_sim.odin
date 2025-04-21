@@ -143,9 +143,9 @@ intersection :: proc(a,b: [2]f64) -> bool {
 }
 
 add_forces :: proc(p: ^Particle, magnet: [2]f64) {
-    F_d : [2]f64 = F_d(dynamic_viscosity_mystery, p.radius, p.position-p.position_old)
+    F_d : [2]f64 = F_d(dynamic_viscosity_water, p.radius, p.position-p.position_old)
     F_m : [2]f64 = 0//F_m(magnet, p.position)
-    F_g : [2]f64 = gravity * p.mass
+    F_g : [2]f64 = 0//gravity * p.mass
     p.force += F_d + F_m + F_g
 }
 
@@ -283,10 +283,22 @@ main :: proc() {
 
     walls : [dynamic]Wall;
     append(&walls,
-           Wall {start = {10, 10},end = {20, 900}}, // left
-           Wall {start = {20, 900},end = {900, 700}}, // bottom
-           Wall {start = {900, 700},end = {900, 20}}, // right
-           Wall {start = {900, 10},end = {10, 10}}, // top
+           Wall {start = {200, 30},end = {97, 183}},
+           Wall {start = {97, 183},end = {97, 717}},
+           Wall {start = {97, 717},end = {191, 969}},
+           Wall {start = {191, 969},end = {241, 969}}, // inlet 
+           Wall {start = {241, 969},end = {513, 202}},
+           Wall {start = {513, 202},end = {484, 30}},
+           Wall {start = {484, 30},end = {434, 30}}, // right outlet
+           Wall {start = {434, 30},end = {400, 227}},
+           Wall {start = {400, 227},end = {344, 227}},
+           Wall {start = {344, 227},end = {344, 170}},
+           Wall {start = {344, 170},end = {250, 30}},
+           Wall {start = {250, 30},end = {200, 30}},
+           // Wall {start = {10, 10},end = {20, 900}}, // left
+           // Wall {start = {20, 900},end = {900, 700}}, // bottom
+           // Wall {start = {900, 700},end = {900, 20}}, // right
+           // Wall {start = {900, 10},end = {10, 10}}, // top
           )
 
     for !rl.WindowShouldClose() {
