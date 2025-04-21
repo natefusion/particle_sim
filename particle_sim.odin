@@ -24,6 +24,7 @@ NM_PER_PX :f64: 100_000_000.0
 Wall :: struct {
     start: [2]f64,
     end: [2]f64,
+    callback : proc(ps: ^Particle)
 }
 
 
@@ -47,14 +48,26 @@ Particle :: struct {
     mass         :    f64,
     radius       :    f64,
     density      :    f64,
+    disabled     : bool,
 }
 
-Velocity_Field :: struct {
+Force_Point :: struct {
     position : [2]f64,
-    width : f64,
-    height : f64,
-    field : [4][4][2]f64,
+    strength : [2]f64,
 }
+
+GetSide :: proc(p, a, b: [2]f64) -> int {
+    crossProduct := (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+
+    if crossProduct > 0 {
+        return 1; // Point is on the "left" side of the line
+    } else if (crossProduct < 0) {
+        return -1; // Point is on the "right" side of the line
+    } else {
+        return 0; // Point is on the line
+    }
+}
+
 
 draw_wall :: proc(wall : Wall) {
     start := [2]f32{cast(f32)wall.start.x, cast(f32)wall.start.y}
@@ -70,23 +83,6 @@ CheckCollisionPointCircle :: proc(point, center: [2]f64, radius: f64) -> (collis
 
 sphere_volume :: proc(radius: f64) -> f64 {
     return 4 * math.PI / 3 * math.pow(radius, 3);
-}
-
-draw_velocity_field :: proc(field : ^Velocity_Field) {
-    for row, i in field.field {
-        rowlen := cast(f32)len(field.field);
-        for col, j in row {
-            col : [2]f32 = {cast(f32)col.x, cast(f32)col.y}
-            collen := cast(f32)len(row);
-            start : [2]f32 = {cast(f32)field.position.x + cast(f32)j*cast(f32)field.width/collen, cast(f32)field.position.y + cast(f32)i*cast(f32)field.height/rowlen};
-            rl.DrawLineEx(start,
-                          start + linalg.normalize(col)*20,
-                          1,
-                          rl.GREEN);
-
-            rl.DrawCircleV(start, 2, rl.GREEN);
-        }
-    }
 }
 
 draw_magnetic_field :: proc(magnet: [2]f64) {
@@ -144,7 +140,7 @@ intersection :: proc(a,b: [2]f64) -> bool {
 
 add_forces :: proc(p: ^Particle, magnet: [2]f64) {
     F_d : [2]f64 = F_d(dynamic_viscosity_water, p.radius, p.position-p.position_old)
-    F_m : [2]f64 = 0//F_m(magnet, p.position)
+    F_m : [2]f64 = F_m(magnet, p.position)
     F_g : [2]f64 = 0//gravity * p.mass
     p.force += F_d + F_m + F_g
 }
@@ -216,11 +212,9 @@ check_particle_wall_collision :: proc(particle: ^Particle, wall: Wall) {
     closest := closest_point_on_segment(particle.position, wall.start, wall.end)
     dist_vec := particle.position - closest
     distance := linalg.length(dist_vec)
-    if linalg.is_nan(distance) do fmt.println("distance nan")
     
     if distance < radius_visual - line_width/2.0 {
         normal := linalg.normalize(dist_vec) if linalg.length(dist_vec) != 0 else {1, 0}
-        if linalg.any(linalg.is_nan_array(normal)) do fmt.println("normal nan")
 
         overlap := radius_visual - distance + line_width/2.0
         particle.position += normal * overlap
@@ -238,7 +232,65 @@ check_particle_wall_collision :: proc(particle: ^Particle, wall: Wall) {
                 particle.position_old -= 2 * linalg.dot(normal, particle.position - particle.position_old) * normal
             }
         }
+
+        wall.callback(particle)
     }
+}
+
+point_in_geometry :: proc(p: [2]f64, walls: []Wall) -> bool {
+    n := len(walls)
+    inside := false
+    p1 := walls[0].start
+    for i in 0..<(n+1) {
+        p2 := walls[i % n].start
+        if p.y > math.min(p1.y, p2.y) {
+            if p.y <= max(p1.y, p2.y) {
+                if p.x <= max(p1.x, p2.x) {
+                    if p1.y != p2.y {
+                        xinters := (p.y - p1.y) * (p2.x - p1.x) / (p2.y - p1.y) + p1.x
+                        if p.x < xinters {
+                            inside = !inside
+                        }
+                    } else if p1.x == p2.x {
+                        inside = !inside
+                    }
+                }
+            }
+        }
+        p1 = p2
+    }
+    return inside
+}
+
+fill_geometry_with_points :: proc(ps: ^[dynamic]Force_Point, walls: []Wall) {
+    for _ in 0..<5000 {
+        p := [2]f64{rand.float64()*1000.0,rand.float64()*1000.0}
+        if point_in_geometry(p, walls) do append(ps, Force_Point{position = p, strength = {0,-5e9}})
+    }
+}
+
+draw_points :: proc(ps: []Force_Point) {
+    for points in ps {
+        p := [2]f32{cast(f32)points.position.x, cast(f32)points.position.y}
+        s := [2]f32{cast(f32)points.strength.x, cast(f32)points.strength.y}
+        rl.DrawCircleV(p, 2, rl.BROWN);
+        rl.DrawLineEx(p, p + 10*linalg.normalize(s), 2, rl.BROWN) 
+    }
+}
+
+change_force_point_strength :: proc(p: ^Force_Point, mouse_pos: [2]f64) {
+    if CheckCollisionCircles(mouse_pos, 50, p.position, 1) {
+        p.strength = -10000000000* {0,1}//linalg.vector_normalize(p.position - mouse_pos)
+    }
+}
+
+null_callback :: proc(p: ^Particle) {}
+
+inlet_callback :: proc(p: ^Particle) {
+}
+
+outlet_callback :: proc(p: ^Particle) {
+    p.disabled = true
 }
 
 main :: proc() {
@@ -247,12 +299,32 @@ main :: proc() {
     rl.SetTargetFPS(rl.GetMonitorRefreshRate(rl.GetCurrentMonitor()));
     FPS := cast(f64)rl.GetMonitorRefreshRate(rl.GetCurrentMonitor());
 
-    max_particles :: 100
+    walls : [dynamic]Wall;
+    append(&walls,
+           Wall {start = {200, 30},end = {97, 183}, callback = null_callback},
+           Wall {start = {97, 183},end = {97, 717}, callback = null_callback},
+           Wall {start = {97, 717},end = {191, 969}, callback = null_callback},
+           Wall {start = {191, 969},end = {241, 969}, callback = inlet_callback}, // inlet 
+           Wall {start = {241, 969},end = {513, 202}, callback = null_callback},
+           Wall {start = {513, 202},end = {484, 30}, callback = null_callback},
+           Wall {start = {484, 30},end = {434, 30}, callback = outlet_callback}, // right outlet
+           Wall {start = {434, 30},end = {400, 227}, callback = null_callback},
+           Wall {start = {400, 227},end = {344, 227}, callback = null_callback},
+           Wall {start = {344, 227},end = {344, 170}, callback = null_callback},
+           Wall {start = {344, 170},end = {250, 30}, callback = null_callback},
+           Wall {start = {250, 30},end = {200, 30}, callback = outlet_callback}, // left outlet
+          )
+
+    force_points : [dynamic]Force_Point
+    fill_geometry_with_points(&force_points, walls[:])
+
+
+    max_particles :: 500
     ps : [dynamic]Particle;
 
     particle_template : Particle = {
         density = density_iron,
-        radius = 200, // nm
+        radius = 400, // nm
     }
     particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
     fmt.println(particle_template.mass)
@@ -261,74 +333,28 @@ main :: proc() {
         particle_template.position_old = {bounds_ugh.x+2 + rand.float64() * bounds_ugh.width, bounds_ugh.y+2 + rand.float64() * bounds_ugh.height}
         particle_template.position = particle_template.position_old
         particle_template.kissing = make(type_of(particle_template.kissing))
-        append(&ps, particle_template)
+        if point_in_geometry(particle_template.position, walls[:]) {
+            append(&ps, particle_template)
+        }
     }
-
-    field_template : Velocity_Field;
-    field_template.width = 100;
-    field_template.height = 100;
-    field_template.position = {900, 900};
-    
-    fields : [dynamic]Velocity_Field;
-    selected_field := -1;
-    append(&fields, field_template);
 
     held_mouse_pos : [2]f64;
 
     mouse_particle_idx := -1
 
-    magnet: [2]f64 = {100, 100};
+    magnet: [2]f64 = {700, 100};
     radius_magnet :: 20
     magnet_selected := false
 
-    walls : [dynamic]Wall;
-    append(&walls,
-           Wall {start = {200, 30},end = {97, 183}},
-           Wall {start = {97, 183},end = {97, 717}},
-           Wall {start = {97, 717},end = {191, 969}},
-           Wall {start = {191, 969},end = {241, 969}}, // inlet 
-           Wall {start = {241, 969},end = {513, 202}},
-           Wall {start = {513, 202},end = {484, 30}},
-           Wall {start = {484, 30},end = {434, 30}}, // right outlet
-           Wall {start = {434, 30},end = {400, 227}},
-           Wall {start = {400, 227},end = {344, 227}},
-           Wall {start = {344, 227},end = {344, 170}},
-           Wall {start = {344, 170},end = {250, 30}},
-           Wall {start = {250, 30},end = {200, 30}}, // left outlet
-           // Wall {start = {10, 10},end = {20, 900}}, // left
-           // Wall {start = {20, 900},end = {900, 700}}, // bottom
-           // Wall {start = {900, 700},end = {900, 20}}, // right
-           // Wall {start = {900, 10},end = {10, 10}}, // top
-          )
-
+    
     for !rl.WindowShouldClose() {
         dt := cast(f64)rl.GetFrameTime()
-        delete_field := -1;
-        field_chosen := false;
         alt_key_down := rl.IsKeyDown(rl.KeyboardKey.LEFT_ALT);
         ctrl_key_down := rl.IsKeyDown(rl.KeyboardKey.LEFT_CONTROL);
         left_mouse := rl.IsMouseButtonPressed(rl.MouseButton.LEFT);
         mousePos32 := rl.GetMousePosition();
         mousePos : [2]f64 = {cast(f64)mousePos32.x, cast(f64)mousePos32.y}
         
-
-        if alt_key_down && rl.IsKeyPressed(rl.KeyboardKey.D) {
-            delete_field = selected_field;
-        }
-
-        if !alt_key_down do selected_field = -1;
-
-        if rl.IsKeyPressed(rl.KeyboardKey.A) {
-            field_template.position.x = mousePos.x - field_template.width/2 + 10;
-            field_template.position.y = mousePos.y - field_template.height/2 + 10; 
-            append(&fields, field_template);
-        }
-
-        if !ctrl_key_down && selected_field >= 0 {
-            fields[selected_field].position = mousePos - held_mouse_pos;
-        }
-
-
 
         if left_mouse && CheckCollisionPointCircle(mousePos, magnet, radius_magnet) {
             magnet_selected = !magnet_selected
@@ -339,6 +365,7 @@ main :: proc() {
         }
         
         for &p, p_idx in ps {
+            if p.disabled do continue
             if CheckCollisionPointCircle(mousePos, p.position, radius_visual) {
                 if left_mouse do mouse_particle_idx = p_idx
             }
@@ -346,35 +373,22 @@ main :: proc() {
             p.force = 0
             avg : [2]f64 = 0
             num := 0
-            for &field, field_idx in fields {
-                if alt_key_down && selected_field < 0 && rl.CheckCollisionPointRec(mousePos32, rl.Rectangle {cast(f32)field.position.x, cast(f32)field.position.y, cast(f32)field.width, cast(f32)field.height}) {
-                    selected_field = field_idx
-                    held_mouse_pos = mousePos - field.position
+
+            for &fp in force_points {
+                if ctrl_key_down {
+                    change_force_point_strength(&fp, mousePos)
                 }
-
-                for &row, i in field.field {
-                    rowlen := cast(f64)len(field.field);
-
-                    for &col, j in row {
-                        collen := cast(f64)len(row);
-                        start : [2]f64 = {field.position.x + cast(f64)j*field.width/collen, field.position.y + cast(f64)i*field.height/rowlen};
-                        if ctrl_key_down && field_idx == selected_field {
-                            arrow := start - mousePos;
-                            col = -1000 * linalg.vector_normalize(arrow);
-                        }
-
-                        diff := linalg.abs(p.position - start);
-                        if diff.x < field.width/collen && diff.y < field.height/rowlen {
-                            avg += col;
-                            num += 1;
-                        }
-                    }
+                diff := linalg.abs(p.position - fp.position)
+                if diff.x < 10 && diff.y < 10 {
+                    avg += fp.strength
+                    num += 1
                 }
             }
             p.force += ((avg / cast(f64)num) if num > 0 else 0) * p.mass
         }
         
         for i in 0..<len(ps) {
+            if ps[i].disabled do continue
             for j in i+1..<len(ps) {
                 resolve_collision(ps[:], i, j)
             }
@@ -385,6 +399,7 @@ main :: proc() {
         }
 
         for &p in ps {
+            if p.disabled do continue
             add_forces(&p, magnet)
             update(&p, dt)
         }
@@ -407,18 +422,14 @@ main :: proc() {
         rl.DrawFPS(14, 14+120+2)
 
         for p, p_idx in ps {
+            if p.disabled do continue
             pos : [2]f32 = {cast(f32)p.position.x, cast(f32)p.position.y}
             rl.DrawCircleV(pos, radius_visual, rl.BLACK);
             // if p_idx == mouse_particle_idx do rl.DrawCircleLinesV(pos, radius_visual+1, rl.RED);
         }
 
+        draw_points(force_points[:])
 
-        for &field, i in fields {
-            if i == selected_field {
-                rl.DrawRectangleLinesEx(rl.Rectangle{cast(f32)field.position.x-10, cast(f32)field.position.y-10, cast(f32)field.width, cast(f32)field.height}, line_width, rl.RED)
-            }
-            draw_velocity_field(&field);
-        }
 
         for wall in walls {
             draw_wall(wall);
@@ -433,10 +444,6 @@ main :: proc() {
         rl.DrawRectangleLinesEx(bounds, line_width, rl.RED);
         
         rl.EndDrawing();
-
-        if delete_field >= 0 {
-            selected_field = -1; ordered_remove(&fields, delete_field);
-        }
     }
 
     rl.CloseWindow();
