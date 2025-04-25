@@ -5,8 +5,8 @@ import "core:math"
 import "core:math/linalg"
 import "core:math/rand"
 import "core:slice"
-NM_PER_M : f64 : 10e9
-NG_PER_KG : f64 : 10e12
+NM_PER_M : f64 : 1e9
+NG_PER_KG : f64 : 1e12
 dynamic_viscosity_water :: 0.0010016 * NG_PER_KG / NM_PER_M; // 68 deg Fahrenheit ng/(nm*s)
 dynamic_viscosity_mystery :: 1 * NG_PER_KG / NM_PER_M; // ng/(nm*s)
 dynamic_viscosity_air ::    0.00001822 * NG_PER_KG / NM_PER_M; // ng/(nm*s)
@@ -23,7 +23,7 @@ NM_PER_PX :f64: 100_000_000.0
 left_outlet_count := 0
 right_outlet_count := 0
 
-magnet_on := true
+magnet_on := false
 
 
 // if true, particles don't kiss
@@ -52,6 +52,8 @@ Particle :: struct {
     force        : [2]f64,
     position_old : [2]f64,
     position     : [2]f64,
+    angular_position_old : f64,
+    angular_position : f64,
     kissing      : Set_int,
     mass         :    f64,
     radius       :    f64,
@@ -160,6 +162,11 @@ update :: proc(p: ^Particle, dt: f64) {
     x := a * dt * dt / NM_PER_PX
     p.position = 2*p.position - p.position_old + x
     p.position_old = temp
+
+    temp_angular := p.angular_position
+    p.angular_position = 2 * p.angular_position - p.angular_position_old
+    p.angular_position_old = temp_angular
+    if (p.angular_position > math.TAU) do p.angular_position -= math.TAU
 }
 
 kiss_probability :: proc() -> f64 {
@@ -183,6 +190,9 @@ resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
     p1 := &ps[p1_idx]
 
     if CheckCollisionCircles(p.position, p.radius_visual, p1.position, p1.radius_visual) {
+        pv_old := (p.position - p.position_old)
+        pv1_old := (p1.position - p1.position_old)
+        
         diff := p.position - p1.position
         dist := linalg.length(diff)
         n := diff / dist
@@ -191,11 +201,11 @@ resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
         p1.position += n * delta
 
         if incel || !(p1_idx in p.kissing && p_idx in p1.kissing) && kiss_probability() > (1 - 0.9) {
-            pv := p.position - p.position_old
-            pv1 := p1.position - p1.position_old
+            pv := pv_old - (2 * p1.mass) / (p.mass + p1.mass) * linalg.dot(pv_old - pv1_old, p.position - p1.position) / linalg.length2(p.position - p1.position) * (p.position - p1.position)
+            pv1 := pv1_old - (2 * p.mass) / (p.mass + p1.mass) * linalg.dot(pv1_old - pv_old, p1.position - p.position) / linalg.length2(p1.position - p.position) * (p1.position - p.position)
 
-            p.position_old = p.position - pv * (2 * p.mass) / (p.mass + p1.mass)
-            p1.position_old = p1.position - pv1 * (2 * p1.mass) / (p.mass + p1.mass)
+            p.position_old = p.position - pv
+            p1.position_old = p1.position - pv1
         }
     } else {
         if !incel && kiss_probability() > (1 - 0.1) {
@@ -332,7 +342,7 @@ main :: proc() {
     fill_geometry_with_points(&force_points, walls[:])
 
 
-    max_particles :: 500
+    max_particles :: 1000
     ps : [dynamic]Particle;
 
     particle_template : Particle = {
@@ -340,13 +350,13 @@ main :: proc() {
         radius = 100, // nm
         radius_visual = 5,
     }
-    particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
-    fmt.println(particle_template.mass)
 
     if (max_particles > 1) {
         for i in 0..<max_particles {
-            particle_template.radius = 10 * (10 + rand.float64())
-            particle_template.radius_visual = 5 * (1 + rand.float64())
+            radius_rand := rand.float64()
+            particle_template.radius = 10 * (10 + radius_rand)
+            particle_template.radius_visual = 5 * (1 + radius_rand)
+            particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
             particle_template.position_old = {rand.float64() * 1000, rand.float64() * 1000}
             particle_template.position = particle_template.position_old
             particle_template.kissing = make(type_of(particle_template.kissing))
@@ -362,14 +372,20 @@ main :: proc() {
                 if please_append do append(&ps, particle_template)
             }
         }
-    } else if max_particles == 1{
-        particle_template.radius = 100
-        particle_template.radius_visual = 5
-        particle_template.position_old = {300, 285}
-        particle_template.position = particle_template.position_old - {-.0625,0}//{-0.0625,0.0625}
+    } else if max_particles == 1 {
+        radius_factor :: 1.0
+        particle_template.radius = 100 * radius_factor
+        particle_template.radius_visual = 5 * radius_factor
+        particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
+        particle_template.position_old = {250, 285}
+        particle_template.position = particle_template.position_old - {-0.126,0}//{-0.0625,0.0625}
         particle_template.kissing = make(type_of(particle_template.kissing))
         append(&ps, particle_template)
 
+        radius_factor_2 :: 2.0
+        particle_template.radius = 100 * radius_factor_2
+        particle_template.radius_visual = 5 * radius_factor_2
+        particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
         particle_template.position_old = {350, 290}
         particle_template.position = particle_template.position_old - {0,0}
         particle_template.kissing = make(type_of(particle_template.kissing))
@@ -449,29 +465,6 @@ main :: proc() {
         rl.BeginDrawing();
         rl.ClearBackground(rl.RAYWHITE);
 
-        if mouse_particle_idx >= len(ps) do mouse_particle_idx = -1
-        if (mouse_particle_idx >= 0) {
-            p := ps[mouse_particle_idx]
-            v := (p.position - p.position_old) / dt
-            a : = p.force / p.mass
-            rl.DrawText(rl.TextFormat("Acceleration: (%f, %f) m/s^2", a.x, a.y), 14, 14, 20, rl.BLACK);
-            rl.DrawText(rl.TextFormat("Acceleration: %f m/s^2", linalg.length(a)), 14, 14+20+2, 20, rl.BLACK);
-            rl.DrawText(rl.TextFormat("Velocity: (%f, %f) m/s", v.x, v.y), 14, 14+40+2, 20, rl.BLACK);
-            rl.DrawText(rl.TextFormat("Velocity: %f m/s", linalg.length(v)), 14, 14+60+2, 20, rl.BLACK);
-            rl.DrawText(rl.TextFormat("Position: (%f, %f) m", p.position.x, p.position.y), 14, 14+80+2, 20, rl.BLACK);
-            rl.DrawText(rl.TextFormat("mass: %.10f kg,\ttouching: %d", p.mass, len(p.kissing)), 14, 14+100+2, 20, rl.BLACK);
-        }
-
-        rl.DrawText(rl.TextFormat("left outlet: %d\nRight outlet: %d", left_outlet_count, right_outlet_count), 800, 10, 20, rl.BLACK)
-
-        rl.DrawFPS(14, 14+120+2)
-
-        for p, p_idx in ps {
-            pos : [2]f32 = {cast(f32)p.position.x, cast(f32)p.position.y}
-            rl.DrawCircleV(pos, cast(f32)p.radius_visual, rl.BLACK);
-            // if p_idx == mouse_particle_idx do rl.DrawCircleLinesV(pos, radius_visual+1, rl.RED);
-        }
-
         draw_points(force_points[:])
 
 
@@ -479,6 +472,37 @@ main :: proc() {
             draw_wall(wall);
         }
 
+        if mouse_particle_idx >= len(ps) do mouse_particle_idx = -1
+        if (mouse_particle_idx >= 0) {
+            p := ps[mouse_particle_idx]
+            v := (p.position - p.position_old) / dt
+            a : = p.force / p.mass / NM_PER_PX
+            rl.DrawText(rl.TextFormat("Acceleration: (%f, %f) px/s^2", a.x, a.y), 14, 14, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("Acceleration: %f px/s^2", linalg.length(a)), 14, 14+20+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("Velocity: (%f, %f) px/s", v.x, v.y), 14, 14+40+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("Velocity: %f px/s", linalg.length(v)), 14, 14+60+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("Position: (%f, %f) px", p.position.x, p.position.y), 14, 14+80+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("mass: %.10f ng", p.mass), 14, 14+100+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("radius: %f nm", p.radius), 14, 14+120+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("touching: %d", len(p.kissing)), 14, 14+140+2, 20, rl.BLACK);
+        }
+
+        rl.DrawText(rl.TextFormat("left outlet: %d\nRight outlet: %d", left_outlet_count, right_outlet_count), 800, 10, 20, rl.BLACK)
+
+        // rl.DrawFPS(14, 14+120+2)
+
+        for p, p_idx in ps {
+
+            pos : [2]f32 = {cast(f32)p.position.x, cast(f32)p.position.y}
+            pos_old : [2]f32 = {cast(f32)p.position_old.x, cast(f32)p.position_old.y}
+            v := (pos - pos_old) / cast(f32)dt
+            rl.DrawCircleV(pos, cast(f32)p.radius_visual, rl.BLACK);
+            rl.DrawCircleV(pos + cast(f32)p.radius_visual*[2]f32{math.cos(cast(f32)p.angular_position), math.sin(cast(f32)p.angular_position)}, 2, rl.RED)
+            rl.DrawLineV(pos, pos + v*10, rl.BLUE)
+            // if p_idx == mouse_particle_idx do rl.DrawCircleLinesV(pos, radius_visual+1, rl.RED);
+        }
+
+        
         // draw_magnetic_field(magnet)
 
         mag := [2]f32{cast(f32)magnet.x, cast(f32)magnet.y}
