@@ -197,8 +197,8 @@ resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
             pnorm := linalg.normalize(pv)
             p1norm := linalg.normalize(pv1)
 
-            p.position_old = p.position - pnorm * linalg.length(pv) * (2 * p.mass) / (p.mass + p1.mass)
-            p1.position_old = p1.position - p1norm * linalg.length(pv1) * (2 * p1.mass) / (p.mass + p1.mass)
+            p.position_old = p.position - pv * (2 * p.mass) / (p.mass + p1.mass)
+            p1.position_old = p1.position - pv1 * (2 * p1.mass) / (p.mass + p1.mass)
         }
     } else {
         if !incel && kiss_probability() > (1 - 0.1) {
