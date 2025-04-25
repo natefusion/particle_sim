@@ -26,9 +26,6 @@ right_outlet_count := 0
 magnet_on := false
 
 
-// if true, particles don't kiss
-incel :: true
-
 Wall :: struct {
     start: [2]f64,
     end: [2]f64,
@@ -45,16 +42,11 @@ Big_Rect :: struct {
 // diameter = 107.4 nm
 // 107.4nm * 200,000 = 21.48mm = 2.148cm
 // 200,000^3 = 8 * 10^15 particles in a (2.148cm)^3 cube
-Empty :: struct {}
-Set_int :: map[int]Empty
 
 Particle :: struct {
     force        : [2]f64,
     position_old : [2]f64,
     position     : [2]f64,
-    angular_position_old : f64,
-    angular_position : f64,
-    kissing      : Set_int,
     mass         :    f64,
     radius       :    f64,
     radius_visual : f64,
@@ -68,7 +60,7 @@ Force_Point :: struct {
 }
 
 GetSide :: proc(p, a, b: [2]f64) -> int {
-    crossProduct := (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    crossProduct := linalg.cross(b - a, p - a)
 
     if crossProduct > 0 {
         return 1; // Point is on the "left" side of the line
@@ -96,17 +88,6 @@ sphere_volume :: proc(radius: f64) -> f64 {
     return 4 * math.PI / 3 * math.pow(radius, 3);
 }
 
-draw_magnetic_field :: proc(magnet: [2]f64) {
-    for i:f32=bounds.x; i < bounds.x+bounds.width; i+=50 {
-        for j:f32=bounds.y; j < bounds.y+bounds.height; j+=50 {
-            x :[2]f64= {cast(f64)i,cast(f64)j}
-            F := F_m(magnet, x)
-            d := linalg.length([2]f32{cast(f32)F.x,cast(f32)F.y}) / 1
-            rl.DrawCircleV({i,j}, d, rl.GREEN)
-        }
-    }
-}
-
 // Stokes Law stuff (https://en.wikipedia.org/wiki/Stokes%27_law)
 // Assumumptions:
 // Laminar flow
@@ -129,24 +110,8 @@ F_m :: proc(magnet: [2]f64, particle: [2]f64) -> (out: [2]f64) {
 
     mag := a / math.pow_f64(linalg.length(x) - b, c) + d 
     dir := linalg.normalize(x)
-    out = mag * dir * 10000 // Gauss, not force, who cares
+    out = mag * dir * 100000 // Gauss, not force, who cares
     return
-}
-
-x_axis_sort :: proc(a,b : Particle) -> bool {
-    return a.position.x < b.position.x
-}
-
-intersection :: proc(a,b: [2]f64) -> bool {
-    inside :: proc(a: f64, b: [2]f64) -> bool {
-        return a >= b[0] && a <= b[1]
-    }
-    c1 := inside(a[0], b)
-    c2 := inside(a[1], b)
-    c3 := inside(b[0], a)
-    c4 := inside(b[1], a)
-
-    return c1 || c2 || c3 || c4
 }
 
 add_forces :: proc(p: ^Particle, magnet: [2]f64) {
@@ -162,15 +127,6 @@ update :: proc(p: ^Particle, dt: f64) {
     x := a * dt * dt / NM_PER_PX
     p.position = 2*p.position - p.position_old + x
     p.position_old = temp
-
-    temp_angular := p.angular_position
-    p.angular_position = 2 * p.angular_position - p.angular_position_old
-    p.angular_position_old = temp_angular
-    if (p.angular_position > math.TAU) do p.angular_position -= math.TAU
-}
-
-kiss_probability :: proc() -> f64 {
-    return math.max(rand.float64(), rand.float64())
 }
 
 CheckCollisionCircles :: proc(center1: [2]f64, radius1: f64, center2: [2]f64, radius2: f64) -> (collision: bool) {
@@ -200,18 +156,11 @@ resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
         p.position -= n * delta
         p1.position += n * delta
 
-        if incel || !(p1_idx in p.kissing && p_idx in p1.kissing) && kiss_probability() > (1 - 0.9) {
-            pv := pv_old - (2 * p1.mass) / (p.mass + p1.mass) * linalg.dot(pv_old - pv1_old, p.position - p1.position) / linalg.length2(p.position - p1.position) * (p.position - p1.position)
-            pv1 := pv1_old - (2 * p.mass) / (p.mass + p1.mass) * linalg.dot(pv1_old - pv_old, p1.position - p.position) / linalg.length2(p1.position - p.position) * (p1.position - p.position)
-
-            p.position_old = p.position - pv
-            p1.position_old = p1.position - pv1
-        }
-    } else {
-        if !incel && kiss_probability() > (1 - 0.1) {
-            delete_key(&p.kissing, p1_idx)
-            delete_key(&p1.kissing, p_idx)
-        }
+        pv := pv_old - (2 * p1.mass) / (p.mass + p1.mass) * linalg.dot(pv_old - pv1_old, p.position - p1.position) / linalg.length2(p.position - p1.position) * (p.position - p1.position)
+        pv1 := pv1_old - (2 * p.mass) / (p.mass + p1.mass) * linalg.dot(pv1_old - pv_old, p1.position - p.position) / linalg.length2(p1.position - p.position) * (p1.position - p.position)
+        
+        p.position_old = p.position - pv
+        p1.position_old = p1.position - pv1
     }
 }
 
@@ -315,7 +264,6 @@ right_outlet_callback :: proc(p: ^Particle) {
     p.disabled = true
 }
 
-
 main :: proc() {
     rl.InitWindow(1000, 1000, "particle sim");
 
@@ -339,10 +287,10 @@ main :: proc() {
           )
 
     force_points : [dynamic]Force_Point
-    fill_geometry_with_points(&force_points, walls[:])
+    // fill_geometry_with_points(&force_points, walls[:])
 
 
-    max_particles :: 1000
+    max_particles :: 50000
     ps : [dynamic]Particle;
 
     particle_template : Particle = {
@@ -359,7 +307,6 @@ main :: proc() {
             particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
             particle_template.position_old = {rand.float64() * 1000, rand.float64() * 1000}
             particle_template.position = particle_template.position_old
-            particle_template.kissing = make(type_of(particle_template.kissing))
             if point_in_geometry(particle_template.position, walls[:]) {
                 please_append := true;
                 for j in 0..<len(ps) {
@@ -379,16 +326,14 @@ main :: proc() {
         particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
         particle_template.position_old = {250, 285}
         particle_template.position = particle_template.position_old - {-0.126,0}//{-0.0625,0.0625}
-        particle_template.kissing = make(type_of(particle_template.kissing))
         append(&ps, particle_template)
 
-        radius_factor_2 :: 2.0
+        radius_factor_2 :: 1.0
         particle_template.radius = 100 * radius_factor_2
         particle_template.radius_visual = 5 * radius_factor_2
         particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
         particle_template.position_old = {350, 290}
         particle_template.position = particle_template.position_old - {0,0}
-        particle_template.kissing = make(type_of(particle_template.kissing))
 
         append(&ps, particle_template)
     }
@@ -484,12 +429,9 @@ main :: proc() {
             rl.DrawText(rl.TextFormat("Position: (%f, %f) px", p.position.x, p.position.y), 14, 14+80+2, 20, rl.BLACK);
             rl.DrawText(rl.TextFormat("mass: %.10f ng", p.mass), 14, 14+100+2, 20, rl.BLACK);
             rl.DrawText(rl.TextFormat("radius: %f nm", p.radius), 14, 14+120+2, 20, rl.BLACK);
-            rl.DrawText(rl.TextFormat("touching: %d", len(p.kissing)), 14, 14+140+2, 20, rl.BLACK);
         }
 
         rl.DrawText(rl.TextFormat("left outlet: %d\nRight outlet: %d", left_outlet_count, right_outlet_count), 800, 10, 20, rl.BLACK)
-
-        // rl.DrawFPS(14, 14+120+2)
 
         for p, p_idx in ps {
 
@@ -497,13 +439,9 @@ main :: proc() {
             pos_old : [2]f32 = {cast(f32)p.position_old.x, cast(f32)p.position_old.y}
             v := (pos - pos_old) / cast(f32)dt
             rl.DrawCircleV(pos, cast(f32)p.radius_visual, rl.BLACK);
-            rl.DrawCircleV(pos + cast(f32)p.radius_visual*[2]f32{math.cos(cast(f32)p.angular_position), math.sin(cast(f32)p.angular_position)}, 2, rl.RED)
             rl.DrawLineV(pos, pos + v*10, rl.BLUE)
             // if p_idx == mouse_particle_idx do rl.DrawCircleLinesV(pos, radius_visual+1, rl.RED);
         }
-
-        
-        // draw_magnetic_field(magnet)
 
         mag := [2]f32{cast(f32)magnet.x, cast(f32)magnet.y}
         rl.DrawCircleV(mag, radius_magnet, rl.BLUE);
