@@ -194,9 +194,6 @@ resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
             pv := p.position - p.position_old
             pv1 := p1.position - p1.position_old
 
-            pnorm := linalg.normalize(pv)
-            p1norm := linalg.normalize(pv1)
-
             p.position_old = p.position - pv * (2 * p.mass) / (p.mass + p1.mass)
             p1.position_old = p1.position - pv1 * (2 * p1.mass) / (p.mass + p1.mass)
         }
