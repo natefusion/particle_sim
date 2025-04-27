@@ -54,6 +54,14 @@ Particle :: struct {
     disabled     : bool,
 }
 
+Link :: struct {
+    p: ^Particle,
+    p1: ^Particle,
+    length: f64,
+}
+
+Super_Particle :: [dynamic]Link
+
 Force_Point :: struct {
     position : [2]f64,
     strength : [2]f64,
@@ -162,6 +170,19 @@ resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
         p.position_old = p.position - pv
         p1.position_old = p1.position - pv1
     }
+}
+
+update_link :: proc(link : Link) {
+    p_pos := &link.p.position
+    p1_pos := &link.p1.position
+
+    diff := p_pos^ - p1_pos^
+    dist := linalg.length(diff)
+    diff_factor := (link.length - dist) / dist
+    offset := diff * diff_factor * 0.5
+
+    p_pos^ += offset
+    p1_pos^ -= offset
 }
 
 closest_point_on_segment :: proc(point: [2]f64, line_start: [2]f64, line_end: [2]f64) -> [2]f64 {
@@ -290,8 +311,9 @@ main :: proc() {
     // fill_geometry_with_points(&force_points, walls[:])
 
 
-    max_particles :: 50000
-    ps : [dynamic]Particle;
+    max_particles :: 1
+    ps : [dynamic]Particle
+    links : [dynamic]Link
 
     particle_template : Particle = {
         density = density_iron,
@@ -324,7 +346,7 @@ main :: proc() {
         particle_template.radius = 100 * radius_factor
         particle_template.radius_visual = 5 * radius_factor
         particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
-        particle_template.position_old = {250, 285}
+        particle_template.position_old = {250, 295}
         particle_template.position = particle_template.position_old - {-0.126,0}//{-0.0625,0.0625}
         append(&ps, particle_template)
 
@@ -334,8 +356,25 @@ main :: proc() {
         particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
         particle_template.position_old = {350, 290}
         particle_template.position = particle_template.position_old - {0,0}
-
         append(&ps, particle_template)
+
+        particle_template.radius = 100 * radius_factor_2
+        particle_template.radius_visual = 5 * radius_factor_2
+        particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
+        particle_template.position_old = {350, 280}
+        particle_template.position = particle_template.position_old - {0,0}
+        append(&ps, particle_template)
+
+        particle_template.radius = 100 * radius_factor_2
+        particle_template.radius_visual = 5 * radius_factor_2
+        particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
+        particle_template.position_old = {360, 285}
+        particle_template.position = particle_template.position_old - {0,0}
+        append(&ps, particle_template)
+
+        append(&links, Link {p = &ps[1], p1 = &ps[2], length = linalg.length(ps[1].position - ps[2].position)})
+        append(&links, Link {p = &ps[2], p1 = &ps[3], length = linalg.length(ps[2].position - ps[3].position)})
+        append(&links, Link {p = &ps[1], p1 = &ps[3], length = linalg.length(ps[1].position - ps[3].position)})
     }
 
     held_mouse_pos : [2]f64;
@@ -406,6 +445,8 @@ main :: proc() {
             add_forces(&p, magnet)
             update(&p, 1.0/1000.0)
         }
+
+        for link in links do update_link(link)
         
         rl.BeginDrawing();
         rl.ClearBackground(rl.RAYWHITE);
@@ -443,6 +484,12 @@ main :: proc() {
             // if p_idx == mouse_particle_idx do rl.DrawCircleLinesV(pos, radius_visual+1, rl.RED);
         }
 
+        for link in links {
+            pos := link.p.position
+            pos1 := link.p1.position
+            rl.DrawLineV(cast_vec2_f32(pos), cast_vec2_f32(pos1), rl.GREEN)
+        }
+
         mag := [2]f32{cast(f32)magnet.x, cast(f32)magnet.y}
         rl.DrawCircleV(mag, radius_magnet, rl.BLUE);
         if magnet_selected do rl.DrawCircleLinesV(mag, radius_magnet+1, rl.RED);
@@ -451,4 +498,8 @@ main :: proc() {
     }
 
     rl.CloseWindow();
+}
+
+cast_vec2_f32 :: proc(v: [2]f64) -> [2]f32 {
+    return {cast(f32)v.x, cast(f32)v.y}
 }
