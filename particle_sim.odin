@@ -24,12 +24,14 @@ left_outlet_count := 0
 right_outlet_count := 0
 
 magnet_on := false
+dt :: 1.0/1000.0
 
 
 Wall :: struct {
     start: [2]f64,
     end: [2]f64,
-    callback : proc(ps: ^Particle)
+    callback : proc(ps: ^Particle),
+    no_clip: bool,
 }
 
 
@@ -47,6 +49,8 @@ Particle :: struct {
     force        : [2]f64,
     position_old : [2]f64,
     position     : [2]f64,
+    angular_position : f64,
+    angular_position_old : f64,
     mass         :    f64,
     radius       :    f64,
     radius_visual : f64,
@@ -55,12 +59,12 @@ Particle :: struct {
 }
 
 Link :: struct {
-    p: ^Particle,
-    p1: ^Particle,
+    p: int,
+    p1: int,
     length: f64,
 }
 
-Super_Particle :: [dynamic]Link
+Super_Particle :: [3]Link
 
 Force_Point :: struct {
     position : [2]f64,
@@ -123,10 +127,41 @@ F_m :: proc(magnet: [2]f64, particle: [2]f64) -> (out: [2]f64) {
 }
 
 add_forces :: proc(p: ^Particle, magnet: [2]f64) {
-    F_d : [2]f64 = F_d(dynamic_viscosity_water, p.radius, p.position-p.position_old)
+    F_d : [2]f64 = F_d(dynamic_viscosity_water, p.radius, (p.position-p.position_old)/dt)
     F_m : [2]f64 = F_m(magnet, p.position) if magnet_on else 0
-    F_g : [2]f64 = 0//gravity * p.mass
-    p.force += F_d + F_m + F_g
+    p.force += F_d + F_m
+}
+
+set_angular_position :: proc(ps: []Particle, sp: ^Super_Particle) {
+    // ugleh
+    // the location for the three particles in a super particle is specified in make_super_particle, at the bottom of the function
+    p1 : ^Particle = &ps[sp[0].p]
+    p2 : ^Particle = &ps[sp[1].p]
+    p3 : ^Particle = &ps[sp[1].p1]
+
+    a := sp[0].length
+    b := sp[1].length
+    c := sp[2].length
+    center := (a * p3.position + b * p1.position + c * p2.position) / (a + b + c)
+
+    straight := [2]f64 {center.x+1, center.y}
+
+    ref := straight-center
+    r1 := p1.position-center
+    r2 := p2.position-center
+    r3 := p3.position-center
+        
+    temp := p1.angular_position
+    p1.angular_position = math.mod(math.TAU + linalg.angle_between(r1, ref) * math.sign(linalg.cross(r1, ref)), math.TAU)
+    p1.angular_position_old = temp
+
+    temp = p2.angular_position
+    p2.angular_position = math.mod(math.TAU + linalg.angle_between(r2, ref) * math.sign(linalg.cross(r2, ref)), math.TAU)
+    p2.angular_position_old = temp
+
+    temp = p3.angular_position
+    p3.angular_position = math.mod(math.TAU + linalg.angle_between(r3, ref) * math.sign(linalg.cross(r3, ref)), math.TAU)
+    p3.angular_position_old = temp
 }
 
 update :: proc(p: ^Particle, dt: f64) {
@@ -172,9 +207,9 @@ resolve_collision :: proc(ps: []Particle, p_idx, p1_idx: int) {
     }
 }
 
-update_link :: proc(link : Link) {
-    p_pos := &link.p.position
-    p1_pos := &link.p1.position
+update_link :: proc(ps: []Particle, link : Link) {
+    p_pos := &ps[link.p].position
+    p1_pos := &ps[link.p1].position
 
     diff := p_pos^ - p1_pos^
     dist := linalg.length(diff)
@@ -223,6 +258,39 @@ check_particle_wall_collision :: proc(particle: ^Particle, wall: Wall) {
     }
 }
 
+circle_in_geometry :: proc(p: [2]f64, radius: f64, walls: []Wall) -> bool {
+    for wall in walls {
+        if CheckCollisionPointCircle(closest_point_on_segment(p, wall.start, wall.end), p, radius) {
+            return false
+        }
+    }
+    
+    n := len(walls)
+    inside := false
+    p1 := walls[0].start
+    
+    for i in 0..<(n+1) {
+        p2 := walls[i % n].start
+        
+        if p.y > math.min(p1.y, p2.y) {
+            if p.y <= max(p1.y, p2.y) {
+                if p.x <= max(p1.x, p2.x) {
+                    if p1.y != p2.y {
+                        xinters := (p.y - p1.y) * (p2.x - p1.x) / (p2.y - p1.y) + p1.x
+                        if p.x < xinters {
+                            inside = !inside
+                        }
+                    } else if p1.x == p2.x {
+                        inside = !inside
+                    }
+                }
+            }
+        }
+        p1 = p2
+    }
+    return inside
+}
+
 point_in_geometry :: proc(p: [2]f64, walls: []Wall) -> bool {
     n := len(walls)
     inside := false
@@ -251,7 +319,7 @@ point_in_geometry :: proc(p: [2]f64, walls: []Wall) -> bool {
 fill_geometry_with_points :: proc(ps: ^[dynamic]Force_Point, walls: []Wall) {
     for _ in 0..<5000 {
         p := [2]f64{rand.float64()*1000.0,rand.float64()*1000.0}
-        if point_in_geometry(p, walls) do append(ps, Force_Point{position = p, strength = {0,-5e9}})
+        if point_in_geometry(p, walls) do append(ps, Force_Point{position = p, strength = {0,-5e11}})
     }
 }
 
@@ -266,7 +334,7 @@ draw_points :: proc(ps: []Force_Point) {
 
 change_force_point_strength :: proc(p: ^Force_Point, mouse_pos: [2]f64) {
     if CheckCollisionCircles(mouse_pos, 50, p.position, 1) {
-        p.strength = -10000000000* {0,1}//linalg.vector_normalize(p.position - mouse_pos)
+        p.strength = -1e9* {0,1}
     }
 }
 
@@ -285,6 +353,43 @@ right_outlet_callback :: proc(p: ^Particle) {
     p.disabled = true
 }
 
+make_super_particle :: proc(super_particles: ^[dynamic]Super_Particle, ps: ^[dynamic]Particle, center_pos: [2]f64) {
+    particle_template : Particle = {density = density_iron,}
+
+    for _ in 0..<3 {
+        radius_rand := rand.float64()
+        particle_template.radius = 10 + (10 * radius_rand)
+        particle_template.radius_visual = 5 * (1 + radius_rand)
+        particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
+
+        append(ps, particle_template)
+    }
+
+    last := len(ps) - 1
+
+    distance :: 3
+    a := ps[last].radius_visual + ps[last-1].radius_visual + distance
+    b := ps[last-1].radius_visual + ps[last-2].radius_visual + distance
+    c := ps[last].radius_visual + ps[last-2].radius_visual + distance
+
+    ps[last].position = center_pos - {a - ps[last-1].radius_visual, 0}
+    ps[last-1].position = center_pos + {a - ps[last].radius_visual, 0}
+
+    theta := math.acos((c*c - a*a - b*b) / (-2 * a * b))
+    height := math.sin(theta) * c
+    ps[last-2].position = center_pos - {0, height}
+
+    ps[last].position_old = ps[last].position
+    ps[last-1].position_old = ps[last-1].position
+    ps[last-2].position_old = ps[last-2].position
+
+    x : Super_Particle
+    x[0] = Link {p = last, p1 = last-1, length = linalg.length(ps[last].position - ps[last-1].position)}
+    x[1] = Link {p = last-1, p1 = last-2, length = linalg.length(ps[last-1].position - ps[last-2].position)}
+    x[2] = Link {p = last, p1 = last-2, length = linalg.length(ps[last].position - ps[last-2].position)}
+    append(super_particles, x)
+}
+
 main :: proc() {
     rl.InitWindow(1000, 1000, "particle sim");
 
@@ -293,27 +398,27 @@ main :: proc() {
 
     walls : [dynamic]Wall;
     append(&walls,
-           Wall {start = {200, 30},end = {97, 183}, callback = null_callback},
-           Wall {start = {97, 183},end = {97, 717}, callback = null_callback},
-           Wall {start = {97, 717},end = {191, 969}, callback = null_callback},
-           Wall {start = {191, 969},end = {241, 969}, callback = inlet_callback}, // inlet 
-           Wall {start = {241, 969},end = {513, 202}, callback = null_callback},
-           Wall {start = {513, 202},end = {484, 30}, callback = null_callback},
-           Wall {start = {484, 30},end = {434, 30}, callback = right_outlet_callback}, // right outlet
-           Wall {start = {434, 30},end = {400, 227}, callback = null_callback},
-           Wall {start = {400, 227},end = {344, 227}, callback = null_callback},
-           Wall {start = {344, 227},end = {344, 170}, callback = null_callback},
-           Wall {start = {344, 170},end = {250, 30}, callback = null_callback},
-           Wall {start = {250, 30},end = {200, 30}, callback = left_outlet_callback}, // left outlet
+           Wall {start = {200, 30},end = {97, 183}, callback = null_callback, no_clip = false},
+           Wall {start = {97, 183},end = {97, 717}, callback = null_callback, no_clip = false},
+           Wall {start = {97, 717},end = {191, 969}, callback = null_callback, no_clip = false},
+           Wall {start = {191, 969},end = {241, 969}, callback = inlet_callback, no_clip = false}, // inlet 
+           Wall {start = {241, 969},end = {513, 202}, callback = null_callback, no_clip = false},
+           Wall {start = {513, 202},end = {484, 30}, callback = null_callback, no_clip = false},
+           Wall {start = {484, 30},end = {434, 30}, callback = right_outlet_callback, no_clip = true}, // right outlet
+           Wall {start = {434, 30},end = {400, 227}, callback = null_callback, no_clip = false},
+           Wall {start = {400, 227},end = {344, 227}, callback = null_callback, no_clip = false},
+           Wall {start = {344, 227},end = {344, 170}, callback = null_callback, no_clip = false},
+           Wall {start = {344, 170},end = {250, 30}, callback = null_callback, no_clip = false},
+           Wall {start = {250, 30},end = {200, 30}, callback = left_outlet_callback, no_clip = true}, // left outlet
           )
 
     force_points : [dynamic]Force_Point
-    // fill_geometry_with_points(&force_points, walls[:])
+    fill_geometry_with_points(&force_points, walls[:])
 
 
-    max_particles :: 1
+    max_particles :: 100
     ps : [dynamic]Particle
-    links : [dynamic]Link
+    super_particles : [dynamic]Super_Particle
 
     particle_template : Particle = {
         density = density_iron,
@@ -321,61 +426,20 @@ main :: proc() {
         radius_visual = 5,
     }
 
-    if (max_particles > 1) {
-        for i in 0..<max_particles {
-            radius_rand := rand.float64()
-            particle_template.radius = 10 * (10 + radius_rand)
-            particle_template.radius_visual = 5 * (1 + radius_rand)
-            particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
-            particle_template.position_old = {rand.float64() * 1000, rand.float64() * 1000}
-            particle_template.position = particle_template.position_old
-            if point_in_geometry(particle_template.position, walls[:]) {
-                please_append := true;
-                for j in 0..<len(ps) {
-                    if CheckCollisionCircles(particle_template.position, particle_template.radius_visual,
-                                             ps[j].position, ps[j].radius_visual) {
-                        please_append = false
-                        break
-                    }
-                }
-                if please_append do append(&ps, particle_template)
-            }
-        }
-    } else if max_particles == 1 {
-        radius_factor :: 1.0
-        particle_template.radius = 100 * radius_factor
-        particle_template.radius_visual = 5 * radius_factor
-        particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
-        particle_template.position_old = {250, 295}
-        particle_template.position = particle_template.position_old - {-0.126,0}//{-0.0625,0.0625}
-        append(&ps, particle_template)
-
-        radius_factor_2 :: 1.0
-        particle_template.radius = 100 * radius_factor_2
-        particle_template.radius_visual = 5 * radius_factor_2
-        particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
-        particle_template.position_old = {350, 290}
-        particle_template.position = particle_template.position_old - {0,0}
-        append(&ps, particle_template)
-
-        particle_template.radius = 100 * radius_factor_2
-        particle_template.radius_visual = 5 * radius_factor_2
-        particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
-        particle_template.position_old = {350, 280}
-        particle_template.position = particle_template.position_old - {0,0}
-        append(&ps, particle_template)
-
-        particle_template.radius = 100 * radius_factor_2
-        particle_template.radius_visual = 5 * radius_factor_2
-        particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
-        particle_template.position_old = {360, 285}
-        particle_template.position = particle_template.position_old - {0,0}
-        append(&ps, particle_template)
-
-        append(&links, Link {p = &ps[1], p1 = &ps[2], length = linalg.length(ps[1].position - ps[2].position)})
-        append(&links, Link {p = &ps[2], p1 = &ps[3], length = linalg.length(ps[2].position - ps[3].position)})
-        append(&links, Link {p = &ps[1], p1 = &ps[3], length = linalg.length(ps[1].position - ps[3].position)})
+    for _ in 0..<max_particles {
+        make_super_particle(&super_particles, &ps, [2]f64{rand.float64()*416 + 97, rand.float64()*939 + 30})
     }
+
+    // make_super_particle(&super_particles, &ps, [2]f64{0.5*416 + 97, 0.5*939 + 30})
+
+    radius_rand := rand.float64()
+    particle_template.radius = 10 + (10 * radius_rand)
+    particle_template.radius_visual = 5 * (1 + radius_rand)
+    particle_template.mass = sphere_volume(particle_template.radius) * particle_template.density
+    particle_template.position = [2]f64{0.5*370 + 97, 0.5*1100 + 30}
+    particle_template.position_old = particle_template.position - {0,-1}
+    append(&ps, particle_template)
+
 
     held_mouse_pos : [2]f64;
 
@@ -387,7 +451,6 @@ main :: proc() {
 
     
     for !rl.WindowShouldClose() {
-        dt := cast(f64)rl.GetFrameTime()
         alt_key_down := rl.IsKeyDown(rl.KeyboardKey.LEFT_ALT);
         ctrl_key_down := rl.IsKeyDown(rl.KeyboardKey.LEFT_CONTROL);
         left_mouse := rl.IsMouseButtonPressed(rl.MouseButton.LEFT);
@@ -407,9 +470,8 @@ main :: proc() {
             magnet_on = !magnet_on
         }
 
-        for p, i in ps do if p.disabled do unordered_remove(&ps, i)
-
         for &p, p_idx in ps {
+            if p.disabled do continue
             if CheckCollisionPointCircle(mousePos, p.position, p.radius_visual) {
                 if left_mouse do mouse_particle_idx = p_idx
             }
@@ -432,7 +494,10 @@ main :: proc() {
         }
         
         for i in 0..<len(ps) {
+            if ps[i].disabled do continue
+            
             for j in i+1..<len(ps) {
+                if ps[j].disabled do continue
                 resolve_collision(ps[:], i, j)
             }
 
@@ -442,15 +507,20 @@ main :: proc() {
         }
 
         for &p in ps {
+            if p.disabled do continue
             add_forces(&p, magnet)
-            update(&p, 1.0/1000.0)
+            update(&p, dt)
         }
 
-        for link in links do update_link(link)
+        for &links in super_particles {
+            for link in links do update_link(ps[:], link)
+            set_angular_position(ps[:], &links)
+        }
         
         rl.BeginDrawing();
         rl.ClearBackground(rl.RAYWHITE);
-
+        
+        
         draw_points(force_points[:])
 
 
@@ -463,14 +533,18 @@ main :: proc() {
             p := ps[mouse_particle_idx]
             v := (p.position - p.position_old) / dt
             a : = p.force / p.mass / NM_PER_PX
+            w := (p.angular_position - p.angular_position_old)/dt
             rl.DrawText(rl.TextFormat("Acceleration: (%f, %f) px/s^2", a.x, a.y), 14, 14, 20, rl.BLACK);
             rl.DrawText(rl.TextFormat("Acceleration: %f px/s^2", linalg.length(a)), 14, 14+20+2, 20, rl.BLACK);
             rl.DrawText(rl.TextFormat("Velocity: (%f, %f) px/s", v.x, v.y), 14, 14+40+2, 20, rl.BLACK);
             rl.DrawText(rl.TextFormat("Velocity: %f px/s", linalg.length(v)), 14, 14+60+2, 20, rl.BLACK);
-            rl.DrawText(rl.TextFormat("Position: (%f, %f) px", p.position.x, p.position.y), 14, 14+80+2, 20, rl.BLACK);
-            rl.DrawText(rl.TextFormat("mass: %.10f ng", p.mass), 14, 14+100+2, 20, rl.BLACK);
-            rl.DrawText(rl.TextFormat("radius: %f nm", p.radius), 14, 14+120+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("Angular Velocity: %f rad/s", w), 14, 14+80+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("Position: (%f, %f) px", p.position.x, p.position.y), 14, 14+100+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("mass: %.10f ng", p.mass), 14, 14+120+2, 20, rl.BLACK);
+            rl.DrawText(rl.TextFormat("radius: %f nm\tradius_visual: %f px", p.radius, p.radius_visual), 14, 14+140+2, 20, rl.BLACK);
         }
+
+        rl.DrawText(rl.TextFormat("(%f, %f)", mousePos32.x, mousePos32.y), 10, 1000 - 22, 20, rl.BLACK)
 
         rl.DrawText(rl.TextFormat("left outlet: %d\nRight outlet: %d", left_outlet_count, right_outlet_count), 800, 10, 20, rl.BLACK)
 
@@ -480,14 +554,19 @@ main :: proc() {
             pos_old : [2]f32 = {cast(f32)p.position_old.x, cast(f32)p.position_old.y}
             v := (pos - pos_old) / cast(f32)dt
             rl.DrawCircleV(pos, cast(f32)p.radius_visual, rl.BLACK);
-            rl.DrawLineV(pos, pos + v*10, rl.BLUE)
+            if p.disabled {
+                rl.DrawCircleV(pos, cast(f32)p.radius_visual + 1, rl.RED);
+            }
+            // rl.DrawLineV(pos, pos + v*10, rl.BLUE)
             // if p_idx == mouse_particle_idx do rl.DrawCircleLinesV(pos, radius_visual+1, rl.RED);
         }
 
-        for link in links {
-            pos := link.p.position
-            pos1 := link.p1.position
-            rl.DrawLineV(cast_vec2_f32(pos), cast_vec2_f32(pos1), rl.GREEN)
+        for &links in super_particles {
+            for &link in links {
+                pos := ps[link.p].position
+                pos1 := ps[link.p1].position
+                rl.DrawLineV(cast_vec2_f32(pos), cast_vec2_f32(pos1), rl.BLACK)
+            }
         }
 
         mag := [2]f32{cast(f32)magnet.x, cast(f32)magnet.y}
