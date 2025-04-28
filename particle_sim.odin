@@ -17,6 +17,7 @@ line_width :: 2
 bounds :: rl.Rectangle {10, 10, 700, 700}
 bounds_ugh :: Big_Rect {x=cast(f64)bounds.x, y=cast(f64)bounds.y, width=cast(f64)bounds.width, height=cast(f64)bounds.height}
 restitution :: 0.5
+dt :: 1.0/1000.0
 radius_visual :: 5.0
 NM_PER_PX :f64: 100_000_000.0
 
@@ -115,7 +116,7 @@ F_m :: proc(magnet: [2]f64, particle: [2]f64) -> (out: [2]f64) {
 }
 
 add_forces :: proc(p: ^Particle, magnet: [2]f64) {
-    F_d : [2]f64 = F_d(dynamic_viscosity_water, p.radius, p.position-p.position_old)
+    F_d : [2]f64 = F_d(dynamic_viscosity_water, p.radius, (p.position-p.position_old)/dt)
     F_m : [2]f64 = F_m(magnet, p.position) if magnet_on else 0
     F_g : [2]f64 = 0//gravity * p.mass
     p.force += F_d + F_m + F_g
@@ -348,7 +349,6 @@ main :: proc() {
 
     
     for !rl.WindowShouldClose() {
-        dt := cast(f64)rl.GetFrameTime()
         alt_key_down := rl.IsKeyDown(rl.KeyboardKey.LEFT_ALT);
         ctrl_key_down := rl.IsKeyDown(rl.KeyboardKey.LEFT_CONTROL);
         left_mouse := rl.IsMouseButtonPressed(rl.MouseButton.LEFT);
