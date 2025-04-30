@@ -17,14 +17,17 @@ line_width :: 2
 bounds :: rl.Rectangle {10, 10, 700, 700}
 bounds_ugh :: Big_Rect {x=cast(f64)bounds.x, y=cast(f64)bounds.y, width=cast(f64)bounds.width, height=cast(f64)bounds.height}
 restitution :: 0.5
-dt :: 1.0/1000.0
+dt :: 1.0/100.0
 radius_visual :: 5.0
 NM_PER_PX :f64: 100_000_000.0
+
+SCREEN_WIDTH :: 1000
+SCREEN_HEIGHT :: 1000
 
 left_outlet_count := 0
 right_outlet_count := 0
 
-magnet_on := false
+magnet_on := true
 
 
 Wall :: struct {
@@ -266,10 +269,10 @@ right_outlet_callback :: proc(p: ^Particle) {
 }
 
 main :: proc() {
-    rl.InitWindow(1000, 1000, "particle sim");
+    rl.InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "particle sim");
 
-    rl.SetTargetFPS(rl.GetMonitorRefreshRate(rl.GetCurrentMonitor()));
-    FPS := cast(f64)rl.GetMonitorRefreshRate(rl.GetCurrentMonitor());
+    rl.SetTargetFPS(rl.GetMonitorRefreshRate(rl.GetCurrentMonitor()))
+    FPS := cast(f64)rl.GetMonitorRefreshRate(rl.GetCurrentMonitor())
 
     walls : [dynamic]Wall;
     append(&walls,
@@ -288,7 +291,7 @@ main :: proc() {
           )
 
     force_points : [dynamic]Force_Point
-    // fill_geometry_with_points(&force_points, walls[:])
+    fill_geometry_with_points(&force_points, walls[:])
 
 
     max_particles :: 50000
@@ -404,13 +407,13 @@ main :: proc() {
 
         for &p in ps {
             add_forces(&p, magnet)
-            update(&p, 1.0/1000.0)
+            update(&p, dt)
         }
         
         rl.BeginDrawing();
         rl.ClearBackground(rl.RAYWHITE);
 
-        draw_points(force_points[:])
+        // draw_points(force_points[:])
 
 
         for wall in walls {
@@ -439,8 +442,6 @@ main :: proc() {
             pos_old : [2]f32 = {cast(f32)p.position_old.x, cast(f32)p.position_old.y}
             v := (pos - pos_old) / cast(f32)dt
             rl.DrawCircleV(pos, cast(f32)p.radius_visual, rl.BLACK);
-            rl.DrawLineV(pos, pos + v*10, rl.BLUE)
-            // if p_idx == mouse_particle_idx do rl.DrawCircleLinesV(pos, radius_visual+1, rl.RED);
         }
 
         mag := [2]f32{cast(f32)magnet.x, cast(f32)magnet.y}
